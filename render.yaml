@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: discord-stats-bot
+    env: node
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: DISCORD_TOKEN
+        sync: false
+      - key: MONGODB_URI
+        sync: false
+      - key: ADMIN_ROLE_NAME
+        value: Scrimster
+      - key: PORT
+        value: 3000
+      - key: APP_URL
+        fromService:
+          type: web
+          name: discord-stats-bot
+          property: url

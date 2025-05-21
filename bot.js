@@ -1,0 +1,915 @@
+// Discord Stats Bot for tracking team statistics
+const { Client, GatewayIntentBits, Partials, EmbedBuilder, PermissionFlagsBits, REST, Routes, SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const fs = require('fs');
+const path = require('path');
+const http = require('http');
+const mongoose = require('mongoose');
+const PORT = process.env.PORT || 3000;
+
+// Try to load environment variables from .env file if dotenv is available
+try {
+    require('dotenv').config();
+} catch (error) {
+    console.log('dotenv module not found, skipping .env file loading');
+}
+
+// Bot configuration
+const config = {
+    adminRoleName: process.env.ADMIN_ROLE_NAME || 'Scrimster', // Admin role name
+    teams: {
+        a: 'A-Team',
+        b: 'B-Team'
+    },
+    colors: {
+        primary: '#3498db',
+        success: '#2ecc71',
+        error: '#e74c3c',
+        aTeam: '#ff5555',
+        bTeam: '#5555ff'
+    }
+};
+
+// Initialize Discord client
+const client = new Client({
+    intents: [
+        GatewayIntentBits.Guilds,
+        GatewayIntentBits.GuildMembers
+    ],
+    // Better connection options
+    restRequestTimeout: 60000,
+    restGlobalRateLimit: 50,
+    retryLimit: Infinity,
+    ws: {
+        large_threshold: 50
+    }
+});
+
+// MongoDB Schema and Connection
+mongoose.connect(process.env.MONGODB_URI, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true
+}).then(() => {
+    console.log('Connected to MongoDB');
+}).catch(err => {
+    console.error('Error connecting to MongoDB:', err);
+});
+
+// Player Schema
+const playerSchema = new mongoose.Schema({
+    discordId: {
+        type: String,
+        required: true,
+        unique: true
+    },
+    displayName: {
+        type: String,
+        required: true
+    },
+    team: {
+        type: String,
+        enum: ['A-Team', 'B-Team'],
+        required: true
+    },
+    gamesPlayed: {
+        type: Number,
+        default: 0
+    },
+    goals: {
+        type: Number,
+        default: 0
+    },
+    assists: {
+        type: Number,
+        default: 0
+    },
+    saves: {
+        type: Number,
+        default: 0
+    },
+    mvps: {
+        type: Number,
+        default: 0
+    },
+    createdAt: {
+        type: Date,
+        default: Date.now
+    },
+    updatedAt: {
+        type: Date,
+        default: Date.now
+    }
+});
+
+// Update timestamp before saving
+playerSchema.pre('save', function(next) {
+    this.updatedAt = Date.now();
+    next();
+});
+
+const Player = mongoose.model('Player', playerSchema);
+
+// Helper function to get the user's display name
+async function getDisplayName(userId, interaction) {
+    try {
+        // Get the member from the guild
+        const member = await interaction.guild.members.fetch(userId);
+        // Return the member's display name (nickname if set, otherwise username)
+        return member ? member.displayName : 'Unknown User';
+    } catch (error) {
+        console.error(`Error fetching display name for user ${userId}:`, error);
+        // Fallback to username if available, otherwise show 'Unknown User'
+        try {
+            const user = await client.users.fetch(userId);
+            return user ? user.username : 'Unknown User';
+        } catch (err) {
+            console.error(`Error fetching user ${userId}:`, err);
+            return 'Unknown User';
+        }
+    }
+}
+
+// Check if user has admin role
+async function isAdmin(member) {
+    if (!member) return false;
+    try {
+        await member.fetch();
+        return member.roles.cache.some(role => role.name === config.adminRoleName);
+    } catch (error) {
+        console.error(`Error checking admin role: ${error.message}`);
+        return false;
+    }
+}
+
+// Database utility functions
+const db = {
+    getPlayer: async (discordId) => {
+        return await Player.findOne({ discordId });
+    },
+
+    getAllPlayers: async (team = null) => {
+        const query = team ? { team } : {};
+        return await Player.find(query).sort('-goals');
+    },
+
+    createPlayer: async (discordId, displayName, team) => {
+        const newPlayer = new Player({
+            discordId,
+            displayName,
+            team,
+            gamesPlayed: 0,
+            goals: 0,
+            assists: 0,
+            saves: 0,
+            mvps: 0
+        });
+        return await newPlayer.save();
+    },
+
+    updatePlayerStats: async (discordId, stats) => {
+        const player = await Player.findOne({ discordId });
+        
+        if (!player) {
+            throw new Error('Player not found');
+        }
+        
+        // Update stats
+        Object.keys(stats).forEach(stat => {
+            if (player[stat] !== undefined) {
+                player[stat] += stats[stat];
+            }
+        });
+        
+        return await player.save();
+    },
+    
+    removePlayerStats: async (discordId, stats) => {
+        const player = await Player.findOne({ discordId });
+        
+        if (!player) {
+            throw new Error('Player not found');
+        }
+        
+        // Remove stats
+        Object.keys(stats).forEach(stat => {
+            if (player[stat] !== undefined) {
+                player[stat] = Math.max(0, player[stat] - stats[stat]);
+            }
+        });
+        
+        return await player.save();
+    },
+    
+    updatePlayerName: async (discordId, displayName) => {
+        return await Player.findOneAndUpdate(
+            { discordId },
+            { displayName },
+            { new: true }
+        );
+    }
+};
+
+// Create embeds for nice looking messages
+function createEmbed(title, description = null, color = config.colors.primary) {
+    const embed = new EmbedBuilder()
+        .setColor(color)
+        .setTitle(title)
+        .setTimestamp()
+        .setFooter({ text: 'Stats Bot', iconURL: 'https://i.imgur.com/wSTFkRM.png' });
+    
+    if (description) {
+        embed.setDescription(description);
+    }
+    
+    return embed;
+}
+
+// Calculate player achievements based on stats
+function calculateAchievements(player) {
+    const achievements = [];
+    
+    if (player.goals >= 10) achievements.push('🎯 Sniper (10+ goals)');
+    if (player.goals >= 25) achievements.push('🚀 Sharp Shooter (25+ goals)');
+    if (player.goals >= 50) achievements.push('💯 Goal Machine (50+ goals)');
+    
+    if (player.assists >= 10) achievements.push('👟 Playmaker (10+ assists)');
+    if (player.assists >= 25) achievements.push('🧠 Master Tactician (25+ assists)');
+    
+    if (player.saves >= 15) achievements.push('🧤 Safe Hands (15+ saves)');
+    if (player.saves >= 30) achievements.push('🛡️ Wall (30+ saves)');
+    
+    if (player.mvps >= 5) achievements.push('⭐ Star Player (5+ MVPs)');
+    if (player.mvps >= 10) achievements.push('👑 MVP King (10+ MVPs)');
+    
+    return achievements.length ? achievements.join('\n') : 'No achievements yet';
+}
+
+// Create player stats embed
+function playerStatsEmbed(player) {
+    const teamColor = player.team === 'A-Team' ? config.colors.aTeam : config.colors.bTeam;
+    
+    return new EmbedBuilder()
+        .setColor(teamColor)
+        .setTitle(`${player.displayName}'s Stats`)
+        .setDescription(`Team: **${player.team}**`)
+        .addFields(
+            { name: '🎮 Games Played', value: player.gamesPlayed.toString(), inline: true },
+            { name: '⚽ Goals', value: player.goals.toString(), inline: true },
+            { name: '👟 Assists', value: player.assists.toString(), inline: true },
+            { name: '🧤 Saves', value: player.saves.toString(), inline: true },
+            { name: '🏆 MVPs', value: player.mvps.toString(), inline: true },
+            { name: '👑 Achievements', value: calculateAchievements(player) }
+        )
+        .setFooter({ text: 'Stats Bot', iconURL: 'https://i.imgur.com/wSTFkRM.png' })
+        .setTimestamp();
+}
+
+// Create team leaderboard embed
+function teamLeaderboardEmbed(players, teamName) {
+    const teamColor = teamName === 'A-Team' ? config.colors.aTeam : config.colors.bTeam;
+    
+    // Sort players by goals
+    players.sort((a, b) => b.goals - a.goals);
+    
+    const embed = new EmbedBuilder()
+        .setColor(teamColor)
+        .setTitle(`${teamName} Leaderboard`)
+        .setDescription(`Top players in ${teamName}`)
+        .setFooter({ text: 'Stats Bot', iconURL: 'https://i.imgur.com/wSTFkRM.png' })
+        .setTimestamp();
+    
+    // Add top goal scorers
+    let goalScorers = '';
+    players.slice(0, 5).forEach((player, index) => {
+        goalScorers += `${index + 1}. **${player.displayName}**: ${player.goals} goals\n`;
+    });
+    
+    // Sort by assists for assist leaders
+    players.sort((a, b) => b.assists - a.assists);
+    let assistLeaders = '';
+    players.slice(0, 3).forEach((player, index) => {
+        assistLeaders += `${index + 1}. **${player.displayName}**: ${player.assists} assists\n`;
+    });
+    
+    // Sort by MVPs for MVP leaders
+    players.sort((a, b) => b.mvps - a.mvps);
+    let mvpLeaders = '';
+    players.slice(0, 3).forEach((player, index) => {
+        mvpLeaders += `${index + 1}. **${player.displayName}**: ${player.mvps} MVPs\n`;
+    });
+    
+    embed.addFields(
+        { name: '⚽ Top Goal Scorers', value: goalScorers || 'No data', inline: false },
+        { name: '👟 Top Assist Providers', value: assistLeaders || 'No data', inline: false },
+        { name: '🏆 MVP Leaders', value: mvpLeaders || 'No data', inline: false }
+    );
+    
+    return embed;
+}
+
+// Define slash commands
+const commands = [
+    new SlashCommandBuilder()
+        .setName('help')
+        .setDescription('Shows help information for the Stats Bot'),
+    
+    new SlashCommandBuilder()
+        .setName('stats')
+        .setDescription('Shows stats for a user')
+        .addUserOption(option => 
+            option.setName('user')
+                .setDescription('The user to check stats for (defaults to yourself)')
+                .setRequired(false)),
+    
+    new SlashCommandBuilder()
+        .setName('team')
+        .setDescription('Shows stats for a team')
+        .addStringOption(option => 
+            option.setName('team')
+                .setDescription('The team to check stats for')
+                .setRequired(true)
+                .addChoices(
+                    { name: 'A-Team', value: 'A-Team' },
+                    { name: 'B-Team', value: 'B-Team' }
+                )),
+
+    new SlashCommandBuilder()
+        .setName('leaderboard')
+        .setDescription('Shows the overall leaderboard'),
+    
+    new SlashCommandBuilder()
+        .setName('register')
+        .setDescription('Register a player')
+        .addUserOption(option =>
+            option.setName('user')
+                .setDescription('The user to register')
+                .setRequired(true))
+        .addStringOption(option =>
+            option.setName('team')
+                .setDescription('The team to assign to the user')
+                .setRequired(true)
+                .addChoices(
+                    { name: 'A-Team', value: 'A-Team' },
+                    { name: 'B-Team', value: 'B-Team' }
+                )),
+    
+    new SlashCommandBuilder()
+        .setName('addstats')
+        .setDescription('Add stats for a player')
+        .addUserOption(option =>
+            option.setName('user')
+                .setDescription('The user to add stats for')
+                .setRequired(true))
+        .addIntegerOption(option =>
+            option.setName('games')
+                .setDescription('Number of games to add')
+                .setRequired(false)
+                .setMinValue(0))
+        .addIntegerOption(option =>
+            option.setName('goals')
+                .setDescription('Number of goals to add')
+                .setRequired(false)
+                .setMinValue(0))
+        .addIntegerOption(option =>
+            option.setName('assists')
+                .setDescription('Number of assists to add')
+                .setRequired(false)
+                .setMinValue(0))
+        .addIntegerOption(option =>
+            option.setName('saves')
+                .setDescription('Number of saves to add')
+                .setRequired(false)
+                .setMinValue(0))
+        .addIntegerOption(option =>
+            option.setName('mvps')
+                .setDescription('Number of MVPs to add')
+                .setRequired(false)
+                .setMinValue(0)),
+
+    new SlashCommandBuilder()
+        .setName('removestats')
+        .setDescription('Remove stats for a player')
+        .addUserOption(option =>
+            option.setName('user')
+                .setDescription('The user to remove stats from')
+                .setRequired(true))
+        .addIntegerOption(option =>
+            option.setName('games')
+                .setDescription('Number of games to remove')
+                .setRequired(false)
+                .setMinValue(0))
+        .addIntegerOption(option =>
+            option.setName('goals')
+                .setDescription('Number of goals to remove')
+                .setRequired(false)
+                .setMinValue(0))
+        .addIntegerOption(option =>
+            option.setName('assists')
+                .setDescription('Number of assists to remove')
+                .setRequired(false)
+                .setMinValue(0))
+        .addIntegerOption(option =>
+            option.setName('saves')
+                .setDescription('Number of saves to remove')
+                .setRequired(false)
+                .setMinValue(0))
+        .addIntegerOption(option =>
+            option.setName('mvps')
+                .setDescription('Number of MVPs to remove')
+                .setRequired(false)
+                .setMinValue(0))
+];
+
+// Add error handling utility function
+async function safeReply(interaction, content, options = {}) {
+    try {
+        if (interaction.deferred || interaction.replied) {
+            return await interaction.editReply(content);
+        } else {
+            return await interaction.reply({...content, ...options});
+        }
+    } catch (error) {
+        console.error(`Error replying to interaction: ${error.message}`);
+        if (error.code === 10062) { // Unknown Interaction error
+            console.log('Interaction expired before response was sent');
+        }
+    }
+}
+
+// Bot ready event
+client.once('ready', () => {
+    console.log(`Bot is online! Logged in as ${client.user.tag}`);
+    
+    // Register slash commands
+    const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+    
+    (async () => {
+        try {
+            console.log('Started refreshing application (/) commands.');
+            
+            await rest.put(
+                Routes.applicationCommands(client.user.id),
+                { body: commands.map(command => command.toJSON()) },
+            );
+            
+            console.log('Successfully reloaded application (/) commands.');
+        } catch (error) {
+            console.error('Failed to reload application (/) commands:', error);
+        }
+    })();
+    
+    // Set up HTTP server for ping mechanism
+    const server = http.createServer((req, res) => {
+        if (req.url === '/ping') {
+            res.writeHead(200);
+            res.end('pong');
+        } else {
+            res.writeHead(200);
+            res.end('Stats Bot is running!');
+        }
+    });
+
+    // Start HTTP server
+    console.log(`Starting HTTP server on port ${PORT}...`);
+    server.listen(PORT, () => {
+        console.log(`HTTP server successfully started on port ${PORT}`);
+    });
+
+    // Self-pinging to keep bot awake (every 2 minutes)
+    setInterval(() => {
+        try {
+            // Get your app URL from environment variable
+            const appUrl = process.env.APP_URL || `http://localhost:${PORT}`;
+            
+            console.log(`[${new Date().toISOString()}] Pinging self at ${appUrl}/ping`);
+            
+            // Determine which http module to use
+            const httpModule = appUrl.startsWith('https') ? require('https') : require('http');
+            
+            // Send the ping
+            const req = httpModule.get(`${appUrl}/ping`, (res) => {
+                let data = '';
+                res.on('data', (chunk) => { data += chunk; });
+                res.on('end', () => {
+                    console.log(`[${new Date().toISOString()}] Self-ping successful with status: ${res.statusCode}`);
+                });
+            });
+            
+            req.on('error', (err) => {
+                console.error(`[${new Date().toISOString()}] Self-ping error: ${err.message}`);
+            });
+            
+            req.end();
+        } catch (error) {
+            console.error(`[${new Date().toISOString()}] Error during self-ping: ${error.message}`);
+        }
+    }, 2 * 60 * 1000); // Every 2 minutes
+});
+
+// Interaction handler
+client.on('interactionCreate', async interaction => {
+    if (!interaction.isChatInputCommand()) return;
+    
+    try {
+        const commandName = interaction.commandName;
+        
+        // Help command
+        if (commandName === 'help') {
+            // Defer reply to give more time for processing
+            await interaction.deferReply();
+            
+            const embed = createEmbed('Stats Bot Help', 'List of available commands:');
+            
+            embed.addFields(
+                { name: '/help', value: 'Shows this help message', inline: false },
+                { name: '/stats [user]', value: 'Shows stats for a user (or yourself if no user is specified)', inline: false },
+                { name: '/team <team>', value: 'Shows stats for a specific team (A-Team or B-Team)', inline: false },
+                { name: '/leaderboard', value: 'Shows the overall leaderboard across both teams', inline: false },
+                { name: '**Admin Commands**', value: 'The following commands require the Scrimster role:', inline: false },
+                { name: '/register <user> <team>', value: 'Register a new player to a team', inline: false },
+                { name: '/addstats <user> [goals] [assists] [saves] [games] [mvps]', value: 'Add stats for a player', inline: false },
+                { name: '/removestats <user> [goals] [assists] [saves] [games] [mvps]', value: 'Remove stats from a player', inline: false }
+            );
+            
+            await safeReply(interaction, { embeds: [embed] });
+            return;
+        }
+        
+        // Stats command
+        if (commandName === 'stats') {
+            // Defer reply to give more time for processing
+            await interaction.deferReply();
+            
+            const targetUser = interaction.options.getUser('user') || interaction.user;
+            const userId = targetUser.id;
+            
+            // Get the player from database
+            let player = await db.getPlayer(userId);
+            
+            if (!player) {
+                await safeReply(interaction, { 
+                    content: `${targetUser.username} is not registered yet. An admin can register them with the \`/register\` command.` 
+                });
+                return;
+            }
+            
+            // Create the stats embed
+            const embed = playerStatsEmbed(player);
+            
+            // Add user avatar if available
+            if (targetUser.avatar) {
+                embed.setThumbnail(targetUser.displayAvatarURL());
+            }
+            
+            await safeReply(interaction, { embeds: [embed] });
+            return;
+        }
+        
+        // Team command
+        if (commandName === 'team') {
+            // Defer reply to give more time for processing
+            await interaction.deferReply();
+            
+            const teamName = interaction.options.getString('team');
+            
+            // Get all players for the team
+            const players = await db.getAllPlayers(teamName);
+            
+            if (players.length === 0) {
+                await safeReply(interaction, { 
+                    content: `No players found for ${teamName}. Use \`/register\` to add players to this team.` 
+                });
+                return;
+            }
+            
+            // Create the team stats embed
+            const embed = teamLeaderboardEmbed(players, teamName);
+            
+            await safeReply(interaction, { embeds: [embed] });
+            return;
+        }
+        
+        // Leaderboard command
+        if (commandName === 'leaderboard') {
+            // Defer reply to give more time for processing
+            await interaction.deferReply();
+            
+            // Get all players from both teams
+            const players = await db.getAllPlayers();
+            
+            if (players.length === 0) {
+                await safeReply(interaction, { 
+                    content: `No players registered yet. Use \`/register\` to add players.` 
+                });
+                return;
+            }
+            
+            // Create the leaderboard embed
+            const embed = createEmbed('Overall Leaderboard', 'Top players across all teams');
+            
+            // Sort by goals, assists, and MVPs
+            let topScorers = [...players].sort((a, b) => b.goals - a.goals).slice(0, 5);
+            let topAssists = [...players].sort((a, b) => b.assists - a.assists).slice(0, 5);
+            let topMVPs = [...players].sort((a, b) => b.mvps - a.mvps).slice(0, 5);
+            
+            // Format the top scorers list
+            let scorersText = '';
+            topScorers.forEach((player, index) => {
+                const medal = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `${index + 1}.`;
+                scorersText += `${medal} **${player.displayName}** (${player.team}): ${player.goals} goals\n`;
+            });
+            
+            // Format the top assists list
+            let assistsText = '';
+            topAssists.forEach((player, index) => {
+                const medal = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `${index + 1}.`;
+                assistsText += `${medal} **${player.displayName}** (${player.team}): ${player.assists} assists\n`;
+            });
+            
+            // Format the top MVPs list
+            let mvpsText = '';
+            topMVPs.forEach((player, index) => {
+                const medal = index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : `${index + 1}.`;
+                mvpsText += `${medal} **${player.displayName}** (${player.team}): ${player.mvps} MVPs\n`;
+            });
+            
+            embed.addFields(
+                { name: '⚽ Top Goal Scorers', value: scorersText || 'No data', inline: false },
+                { name: '👟 Top Assist Providers', value: assistsText || 'No data', inline: false },
+                { name: '🏆 Top MVP Winners', value: mvpsText || 'No data', inline: false }
+            );
+            
+            await safeReply(interaction, { embeds: [embed] });
+            return;
+        }
+        
+        // Register command (Admin only)
+        if (commandName === 'register') {
+            // Defer reply to give more time for processing
+            await interaction.deferReply();
+            
+            // Check if user has admin role
+            if (!(await isAdmin(interaction.member))) {
+                await safeReply(interaction, { 
+                    content: `You need the "${config.adminRoleName}" role to use this command.`,
+                    ephemeral: true 
+                });
+                return;
+            }
+            
+            const targetUser = interaction.options.getUser('user');
+            const team = interaction.options.getString('team');
+            
+            // Check if player already exists
+            let player = await db.getPlayer(targetUser.id);
+            
+            if (player) {
+                // Update team if needed
+                if (player.team !== team) {
+                    player.team = team;
+                    await player.save();
+                    
+                    await safeReply(interaction, { 
+                        content: `${targetUser.username} has been moved to ${team}.`,
+                        ephemeral: false
+                    });
+                } else {
+                    await safeReply(interaction, { 
+                        content: `${targetUser.username} is already registered to ${team}.`,
+                        ephemeral: false
+                    });
+                }
+                return;
+            }
+            
+            // Get display name
+            const displayName = await getDisplayName(targetUser.id, interaction);
+            
+            // Create new player
+            try {
+                player = await db.createPlayer(targetUser.id, displayName, team);
+                
+                const embed = createEmbed('Player Registered', 
+                    `✅ **${displayName}** has been registered to **${team}**!`, 
+                    config.colors.success);
+                
+                await safeReply(interaction, { embeds: [embed] });
+            } catch (error) {
+                console.error('Error registering player:', error);
+                
+                await safeReply(interaction, { 
+                    content: `Error registering player: ${error.message}`,
+                    ephemeral: true
+                });
+            }
+            
+            return;
+        }
+        
+        // Add stats command (Admin only)
+        if (commandName === 'addstats') {
+            // Defer reply to give more time for processing
+            await interaction.deferReply();
+            
+            // Check if user has admin role
+            if (!(await isAdmin(interaction.member))) {
+                await safeReply(interaction, { 
+                    content: `You need the "${config.adminRoleName}" role to use this command.`,
+                    ephemeral: true 
+                });
+                return;
+            }
+            
+            const targetUser = interaction.options.getUser('user');
+            
+            // Get stats from options
+            const stats = {
+                gamesPlayed: interaction.options.getInteger('games') || 0,
+                goals: interaction.options.getInteger('goals') || 0,
+                assists: interaction.options.getInteger('assists') || 0,
+                saves: interaction.options.getInteger('saves') || 0,
+                mvps: interaction.options.getInteger('mvps') || 0
+            };
+            
+            // Check if any stats were provided
+            const totalStats = Object.values(stats).reduce((sum, val) => sum + val, 0);
+            if (totalStats === 0) {
+                await safeReply(interaction, { 
+                    content: 'Please provide at least one stat to add.',
+                    ephemeral: true
+                });
+                return;
+            }
+            
+            // Check if player exists
+            let player = await db.getPlayer(targetUser.id);
+            
+            if (!player) {
+                await safeReply(interaction, { 
+                    content: `${targetUser.username} is not registered yet. Use \`/register\` first.`,
+                    ephemeral: false
+                });
+                return;
+            }
+            
+            // Update stats
+            try {
+                const updatedPlayer = await db.updatePlayerStats(targetUser.id, stats);
+                
+                // Build description of what was added
+                let description = `Stats added for **${updatedPlayer.displayName}**:\n\n`;
+                if (stats.gamesPlayed > 0) description += `🎮 **Games**: +${stats.gamesPlayed}\n`;
+                if (stats.goals > 0) description += `⚽ **Goals**: +${stats.goals}\n`;
+                if (stats.assists > 0) description += `👟 **Assists**: +${stats.assists}\n`;
+                if (stats.saves > 0) description += `🧤 **Saves**: +${stats.saves}\n`;
+                if (stats.mvps > 0) description += `🏆 **MVPs**: +${stats.mvps}\n`;
+                
+                description += `\n**New Totals**:\n`;
+                description += `🎮 Games: ${updatedPlayer.gamesPlayed} | `;
+                description += `⚽ Goals: ${updatedPlayer.goals} | `;
+                description += `👟 Assists: ${updatedPlayer.assists} | `;
+                description += `🧤 Saves: ${updatedPlayer.saves} | `;
+                description += `🏆 MVPs: ${updatedPlayer.mvps}`;
+                
+                const embed = createEmbed('Stats Added', description, config.colors.success);
+                
+                await safeReply(interaction, { embeds: [embed] });
+            } catch (error) {
+                console.error('Error adding stats:', error);
+                
+                await safeReply(interaction, { 
+                    content: `Error adding stats: ${error.message}`,
+                    ephemeral: true
+                });
+            }
+            
+            return;
+        }
+        
+        // Remove stats command (Admin only)
+        if (commandName === 'removestats') {
+            // Defer reply to give more time for processing
+            await interaction.deferReply();
+            
+            // Check if user has admin role
+            if (!(await isAdmin(interaction.member))) {
+                await safeReply(interaction, { 
+                    content: `You need the "${config.adminRoleName}" role to use this command.`,
+                    ephemeral: true 
+                });
+                return;
+            }
+            
+            const targetUser = interaction.options.getUser('user');
+            
+            // Get stats from options
+            const stats = {
+                gamesPlayed: interaction.options.getInteger('games') || 0,
+                goals: interaction.options.getInteger('goals') || 0,
+                assists: interaction.options.getInteger('assists') || 0,
+                saves: interaction.options.getInteger('saves') || 0,
+                mvps: interaction.options.getInteger('mvps') || 0
+            };
+            
+            // Check if any stats were provided
+            const totalStats = Object.values(stats).reduce((sum, val) => sum + val, 0);
+            if (totalStats === 0) {
+                await safeReply(interaction, { 
+                    content: 'Please provide at least one stat to remove.',
+                    ephemeral: true
+                });
+                return;
+            }
+            
+            // Check if player exists
+            let player = await db.getPlayer(targetUser.id);
+            
+            if (!player) {
+                await safeReply(interaction, { 
+                    content: `${targetUser.username} is not registered yet. Use \`/register\` first.`,
+                    ephemeral: false
+                });
+                return;
+            }
+            
+            // Remove stats
+            try {
+                const updatedPlayer = await db.removePlayerStats(targetUser.id, stats);
+                
+                // Build description of what was removed
+                let description = `Stats removed from **${updatedPlayer.displayName}**:\n\n`;
+                if (stats.gamesPlayed > 0) description += `🎮 **Games**: -${stats.gamesPlayed}\n`;
+                if (stats.goals > 0) description += `⚽ **Goals**: -${stats.goals}\n`;
+                if (stats.assists > 0) description += `👟 **Assists**: -${stats.assists}\n`;
+                if (stats.saves > 0) description += `🧤 **Saves**: -${stats.saves}\n`;
+                if (stats.mvps > 0) description += `🏆 **MVPs**: -${stats.mvps}\n`;
+                
+                description += `\n**New Totals**:\n`;
+                description += `🎮 Games: ${updatedPlayer.gamesPlayed} | `;
+                description += `⚽ Goals: ${updatedPlayer.goals} | `;
+                description += `👟 Assists: ${updatedPlayer.assists} | `;
+                description += `🧤 Saves: ${updatedPlayer.saves} | `;
+                description += `🏆 MVPs: ${updatedPlayer.mvps}`;
+                
+                const embed = createEmbed('Stats Removed', description, config.colors.success);
+                
+                await safeReply(interaction, { embeds: [embed] });
+            } catch (error) {
+                console.error('Error removing stats:', error);
+                
+                await safeReply(interaction, { 
+                    content: `Error removing stats: ${error.message}`,
+                    ephemeral: true
+                });
+            }
+            
+            return;
+        }
+        
+    } catch (error) {
+        // Global error handler for all command processing
+        console.error(`Error processing command ${interaction.commandName}:`, error);
+        
+        try {
+            // Try to inform the user that something went wrong
+            const errorMessage = error.code === 10062 
+                ? "The response took too long to process. Please try again."
+                : "An error occurred while processing your command. Please try again.";
+                
+            if (!interaction.replied && !interaction.deferred) {
+                await interaction.reply({ 
+                    content: errorMessage,
+                    ephemeral: true
+                });
+            } else if (interaction.deferred) {
+                await interaction.editReply({ content: errorMessage });
+            }
+        } catch (replyError) {
+            console.error('Failed to send error message:', replyError);
+        }
+    }
+});
+
+// Add reconnection handlers
+client.on('disconnect', (event) => {
+    console.error(`Bot disconnected with code ${event.code}. Reason: ${event.reason}`);
+});
+
+client.on('reconnecting', () => {
+    console.log('Bot is reconnecting...');
+});
+
+client.on('resumed', (replayed) => {
+    console.log(`Bot connection resumed. ${replayed} events replayed.`);
+});
+
+client.on('error', (error) => {
+    console.error('Discord client error:', error);
+});
+
+// Log in to Discord
+console.log('Attempting to log in to Discord...');
+client.login(process.env.DISCORD_TOKEN).then(() => {
+    console.log('Successfully logged in to Discord');
+}).catch(error => {
+    console.error('Failed to log in to Discord:', error);
+});
