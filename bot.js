@@ -479,7 +479,24 @@ async function isAdmin(member) {
         return false;
     }
 }
-
+async function getDisplayName(userId, interaction) {
+    try {
+        // Get the member from the guild
+        const member = await interaction.guild.members.fetch(userId);
+        // Return the member's display name (nickname if set, otherwise username)
+        return member ? member.displayName : 'Unknown User';
+    } catch (error) {
+        console.error(`Error fetching display name for user ${userId}:`, error);
+        // Fallback to username if available, otherwise show 'Unknown User'
+        try {
+            const user = await interaction.client.users.fetch(userId);
+            return user ? user.username : 'Unknown User';
+        } catch (err) {
+            console.error(`Error fetching user ${userId}:`, err);
+            return 'Unknown User';
+        }
+    }
+}
 // Interaction handler
 client.on('interactionCreate', async interaction => {
     if (!interaction.isChatInputCommand()) return;
