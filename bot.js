@@ -460,6 +460,25 @@ client.once('ready', () => {
         }
     }, 2 * 60 * 1000); // Every 2 minutes
 });
+// Check if user has admin role
+async function isAdmin(member) {
+    if (!member) return false;
+    try {
+        // If member is not fetched, fetch it first
+        if (!member.fetch) {
+            console.warn('Member object does not have fetch method');
+            return false;
+        }
+        
+        await member.fetch();
+        
+        // Check if the member has the admin role
+        return member.roles.cache.some(role => role.name === config.adminRoleName);
+    } catch (error) {
+        console.error(`Error checking admin role: ${error.message}`);
+        return false;
+    }
+}
 
 // Interaction handler
 client.on('interactionCreate', async interaction => {
