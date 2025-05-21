@@ -1,9 +1,8 @@
 // Discord Stats Bot for tracking team statistics
 const { Client, GatewayIntentBits, Partials, EmbedBuilder, PermissionFlagsBits, REST, Routes, SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
-const fs = require('fs');
+const fs = require('fs').promises;
 const path = require('path');
 const http = require('http');
-const mongoose = require('mongoose');
 const PORT = process.env.PORT || 3000;
 
 // Try to load environment variables from .env file if dotenv is available
@@ -26,7 +25,8 @@ const config = {
         error: '#e74c3c',
         aTeam: '#ff5555',
         bTeam: '#5555ff'
-    }
+    },
+    dataFilePath: path.join(__dirname, 'players.json')
 };
 
 // Initialize Discord client
@@ -44,69 +44,142 @@ const client = new Client({
     }
 });
 
-// MongoDB Schema and Connection
-mongoose.connect(process.env.MONGODB_URI, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true
-}).then(() => {
-    console.log('Connected to MongoDB');
-}).catch(err => {
-    console.error('Error connecting to MongoDB:', err);
-});
+// Database utility functions using file storage
+const db = {
+    // Read entire players file
+    readPlayersFile: async () => {
+        try {
+            // Ensure the file exists, create if not
+            await fs.access(config.dataFilePath).catch(async () => {
+                await fs.writeFile(config.dataFilePath, JSON.stringify([]));
+            });
 
-// Player Schema
-const playerSchema = new mongoose.Schema({
-    discordId: {
-        type: String,
-        required: true,
-        unique: true
+            const data = await fs.readFile(config.dataFilePath, 'utf8');
+            return JSON.parse(data);
+        } catch (error) {
+            console.error('Error reading players file:', error);
+            return [];
+        }
     },
-    displayName: {
-        type: String,
-        required: true
+
+    // Write players data to file
+    writePlayersFile: async (players) => {
+        try {
+            await fs.writeFile(config.dataFilePath, JSON.stringify(players, null, 2));
+        } catch (error) {
+            console.error('Error writing players file:', error);
+        }
     },
-    team: {
-        type: String,
-        enum: ['A-Team', 'B-Team'],
-        required: true
+
+    // Get a specific player
+    getPlayer: async (discordId) => {
+        const players = await db.readPlayersFile();
+        return players.find(p => p.discordId === discordId);
     },
-    gamesPlayed: {
-        type: Number,
-        default: 0
+
+    // Get all players (optionally filtered by team)
+    getAllPlayers: async (team = null) => {
+        const players = await db.readPlayersFile();
+        return team 
+            ? players.filter(p => p.team === team).sort((a, b) => b.goals - a.goals)
+            : players.sort((a, b) => b.goals - a.goals);
     },
-    goals: {
-        type: Number,
-        default: 0
+
+    // Create a new player
+    createPlayer: async (discordId, displayName, team) => {
+        const players = await db.readPlayersFile();
+        
+        // Check if player already exists
+        if (players.some(p => p.discordId === discordId)) {
+            throw new Error('Player already exists');
+        }
+
+        const newPlayer = {
+            discordId,
+            displayName,
+            team,
+            gamesPlayed: 0,
+            goals: 0,
+            assists: 0,
+            saves: 0,
+            mvps: 0,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+        };
+
+        players.push(newPlayer);
+        await db.writePlayersFile(players);
+        return newPlayer;
     },
-    assists: {
-        type: Number,
-        default: 0
+
+    // Update player stats
+    updatePlayerStats: async (discordId, stats) => {
+        const players = await db.readPlayersFile();
+        const playerIndex = players.findIndex(p => p.discordId === discordId);
+        
+        if (playerIndex === -1) {
+            throw new Error('Player not found');
+        }
+        
+        // Update stats
+        const player = players[playerIndex];
+        Object.keys(stats).forEach(stat => {
+            if (player.hasOwnProperty(stat) && typeof player[stat] === 'number') {
+                player[stat] += stats[stat];
+            }
+        });
+        
+        // Update timestamp
+        player.updatedAt = new Date().toISOString();
+        
+        // Write updated players back to file
+        await db.writePlayersFile(players);
+        return player;
     },
-    saves: {
-        type: Number,
-        default: 0
+    
+    // Remove player stats
+    removePlayerStats: async (discordId, stats) => {
+        const players = await db.readPlayersFile();
+        const playerIndex = players.findIndex(p => p.discordId === discordId);
+        
+        if (playerIndex === -1) {
+            throw new Error('Player not found');
+        }
+        
+        // Remove stats
+        const player = players[playerIndex];
+        Object.keys(stats).forEach(stat => {
+            if (player.hasOwnProperty(stat) && typeof player[stat] === 'number') {
+                player[stat] = Math.max(0, player[stat] - stats[stat]);
+            }
+        });
+        
+        // Update timestamp
+        player.updatedAt = new Date().toISOString();
+        
+        // Write updated players back to file
+        await db.writePlayersFile(players);
+        return player;
     },
-    mvps: {
-        type: Number,
-        default: 0
-    },
-    createdAt: {
-        type: Date,
-        default: Date.now
-    },
-    updatedAt: {
-        type: Date,
-        default: Date.now
+    
+    // Update player name
+    updatePlayerName: async (discordId, displayName) => {
+        const players = await db.readPlayersFile();
+        const playerIndex = players.findIndex(p => p.discordId === discordId);
+        
+        if (playerIndex === -1) {
+            throw new Error('Player not found');
+        }
+        
+        // Update display name
+        players[playerIndex].displayName = displayName;
+        players[playerIndex].updatedAt = new Date().toISOString();
+        
+        // Write updated players back to file
+        await db.writePlayersFile(players);
+        return players[playerIndex];
     }
-});
-
-// Update timestamp before saving
-playerSchema.pre('save', function(next) {
-    this.updatedAt = Date.now();
-    next();
-});
-
-const Player = mongoose.model('Player', playerSchema);
+};
 
 // Helper function to get the user's display name
 async function getDisplayName(userId, interaction) {
@@ -139,74 +212,6 @@ async function isAdmin(member) {
         return false;
     }
 }
-
-// Database utility functions
-const db = {
-    getPlayer: async (discordId) => {
-        return await Player.findOne({ discordId });
-    },
-
-    getAllPlayers: async (team = null) => {
-        const query = team ? { team } : {};
-        return await Player.find(query).sort('-goals');
-    },
-
-    createPlayer: async (discordId, displayName, team) => {
-        const newPlayer = new Player({
-            discordId,
-            displayName,
-            team,
-            gamesPlayed: 0,
-            goals: 0,
-            assists: 0,
-            saves: 0,
-            mvps: 0
-        });
-        return await newPlayer.save();
-    },
-
-    updatePlayerStats: async (discordId, stats) => {
-        const player = await Player.findOne({ discordId });
-        
-        if (!player) {
-            throw new Error('Player not found');
-        }
-        
-        // Update stats
-        Object.keys(stats).forEach(stat => {
-            if (player[stat] !== undefined) {
-                player[stat] += stats[stat];
-            }
-        });
-        
-        return await player.save();
-    },
-    
-    removePlayerStats: async (discordId, stats) => {
-        const player = await Player.findOne({ discordId });
-        
-        if (!player) {
-            throw new Error('Player not found');
-        }
-        
-        // Remove stats
-        Object.keys(stats).forEach(stat => {
-            if (player[stat] !== undefined) {
-                player[stat] = Math.max(0, player[stat] - stats[stat]);
-            }
-        });
-        
-        return await player.save();
-    },
-    
-    updatePlayerName: async (discordId, displayName) => {
-        return await Player.findOneAndUpdate(
-            { discordId },
-            { displayName },
-            { new: true }
-        );
-    }
-};
 
 // Create embeds for nice looking messages
 function createEmbed(title, description = null, color = config.colors.primary) {
@@ -383,7 +388,8 @@ const commands = [
             option.setName('mvps')
                 .setDescription('Number of MVPs to add')
                 .setRequired(false)
-                .setMinValue(0)),
+                .setMinValue
+    ),
 
     new SlashCommandBuilder()
         .setName('removestats')
@@ -664,9 +670,13 @@ client.on('interactionCreate', async interaction => {
             
             if (player) {
                 // Update team if needed
-                if (player.team !== team) {
-                    player.team = team;
-                    await player.save();
+                const players = await db.readPlayersFile();
+                const playerIndex = players.findIndex(p => p.discordId === targetUser.id);
+                
+                if (players[playerIndex].team !== team) {
+                    players[playerIndex].team = team;
+                    players[playerIndex].updatedAt = new Date().toISOString();
+                    await db.writePlayersFile(players);
                     
                     await safeReply(interaction, { 
                         content: `${targetUser.username} has been moved to ${team}.`,
@@ -760,8 +770,7 @@ client.on('interactionCreate', async interaction => {
                 if (stats.gamesPlayed > 0) description += `🎮 **Games**: +${stats.gamesPlayed}\n`;
                 if (stats.goals > 0) description += `⚽ **Goals**: +${stats.goals}\n`;
                 if (stats.assists > 0) description += `👟 **Assists**: +${stats.assists}\n`;
-                if (stats.saves > 0) description += `🧤 **Saves**: +${stats.saves}\n`;
-                if (stats.mvps > 0) description += `🏆 **MVPs**: +${stats.mvps}\n`;
+                if (stats.saves > 0) description += `🧤 **Saves**: +${stats.saves}\n`;if (stats.mvps > 0) description += `🏆 **MVPs**: +${stats.mvps}\n`;
                 
                 description += `\n**New Totals**:\n`;
                 description += `🎮 Games: ${updatedPlayer.gamesPlayed} | `;
