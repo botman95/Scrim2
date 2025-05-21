@@ -1,5 +1,5 @@
 // Discord Stats Bot for tracking team statistics
-const { Client, GatewayIntentBits, Partials, EmbedBuilder, PermissionFlagsBits, REST, Routes, SlashCommandBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { Client, GatewayIntentBits, Partials, EmbedBuilder, PermissionFlagsBits, REST, Routes, SlashCommandBuilder } = require('discord.js');
 const fs = require('fs').promises;
 const path = require('path');
 const http = require('http');
@@ -181,137 +181,7 @@ const db = {
     }
 };
 
-// Helper function to get the user's display name
-async function getDisplayName(userId, interaction) {
-    try {
-        // Get the member from the guild
-        const member = await interaction.guild.members.fetch(userId);
-        // Return the member's display name (nickname if set, otherwise username)
-        return member ? member.displayName : 'Unknown User';
-    } catch (error) {
-        console.error(`Error fetching display name for user ${userId}:`, error);
-        // Fallback to username if available, otherwise show 'Unknown User'
-        try {
-            const user = await client.users.fetch(userId);
-            return user ? user.username : 'Unknown User';
-        } catch (err) {
-            console.error(`Error fetching user ${userId}:`, err);
-            return 'Unknown User';
-        }
-    }
-}
-
-// Check if user has admin role
-async function isAdmin(member) {
-    if (!member) return false;
-    try {
-        await member.fetch();
-        return member.roles.cache.some(role => role.name === config.adminRoleName);
-    } catch (error) {
-        console.error(`Error checking admin role: ${error.message}`);
-        return false;
-    }
-}
-
-// Create embeds for nice looking messages
-function createEmbed(title, description = null, color = config.colors.primary) {
-    const embed = new EmbedBuilder()
-        .setColor(color)
-        .setTitle(title)
-        .setTimestamp()
-        .setFooter({ text: 'Stats Bot', iconURL: 'https://i.imgur.com/wSTFkRM.png' });
-    
-    if (description) {
-        embed.setDescription(description);
-    }
-    
-    return embed;
-}
-
-// Calculate player achievements based on stats
-function calculateAchievements(player) {
-    const achievements = [];
-    
-    if (player.goals >= 10) achievements.push('🎯 Sniper (10+ goals)');
-    if (player.goals >= 25) achievements.push('🚀 Sharp Shooter (25+ goals)');
-    if (player.goals >= 50) achievements.push('💯 Goal Machine (50+ goals)');
-    
-    if (player.assists >= 10) achievements.push('👟 Playmaker (10+ assists)');
-    if (player.assists >= 25) achievements.push('🧠 Master Tactician (25+ assists)');
-    
-    if (player.saves >= 15) achievements.push('🧤 Safe Hands (15+ saves)');
-    if (player.saves >= 30) achievements.push('🛡️ Wall (30+ saves)');
-    
-    if (player.mvps >= 5) achievements.push('⭐ Star Player (5+ MVPs)');
-    if (player.mvps >= 10) achievements.push('👑 MVP King (10+ MVPs)');
-    
-    return achievements.length ? achievements.join('\n') : 'No achievements yet';
-}
-
-// Create player stats embed
-function playerStatsEmbed(player) {
-    const teamColor = player.team === 'A-Team' ? config.colors.aTeam : config.colors.bTeam;
-    
-    return new EmbedBuilder()
-        .setColor(teamColor)
-        .setTitle(`${player.displayName}'s Stats`)
-        .setDescription(`Team: **${player.team}**`)
-        .addFields(
-            { name: '🎮 Games Played', value: player.gamesPlayed.toString(), inline: true },
-            { name: '⚽ Goals', value: player.goals.toString(), inline: true },
-            { name: '👟 Assists', value: player.assists.toString(), inline: true },
-            { name: '🧤 Saves', value: player.saves.toString(), inline: true },
-            { name: '🏆 MVPs', value: player.mvps.toString(), inline: true },
-            { name: '👑 Achievements', value: calculateAchievements(player) }
-        )
-        .setFooter({ text: 'Stats Bot', iconURL: 'https://i.imgur.com/wSTFkRM.png' })
-        .setTimestamp();
-}
-
-// Create team leaderboard embed
-function teamLeaderboardEmbed(players, teamName) {
-    const teamColor = teamName === 'A-Team' ? config.colors.aTeam : config.colors.bTeam;
-    
-    // Sort players by goals
-    players.sort((a, b) => b.goals - a.goals);
-    
-    const embed = new EmbedBuilder()
-        .setColor(teamColor)
-        .setTitle(`${teamName} Leaderboard`)
-        .setDescription(`Top players in ${teamName}`)
-        .setFooter({ text: 'Stats Bot', iconURL: 'https://i.imgur.com/wSTFkRM.png' })
-        .setTimestamp();
-    
-    // Add top goal scorers
-    let goalScorers = '';
-    players.slice(0, 5).forEach((player, index) => {
-        goalScorers += `${index + 1}. **${player.displayName}**: ${player.goals} goals\n`;
-    });
-    
-    // Sort by assists for assist leaders
-    players.sort((a, b) => b.assists - a.assists);
-    let assistLeaders = '';
-    players.slice(0, 3).forEach((player, index) => {
-        assistLeaders += `${index + 1}. **${player.displayName}**: ${player.assists} assists\n`;
-    });
-    
-    // Sort by MVPs for MVP leaders
-    players.sort((a, b) => b.mvps - a.mvps);
-    let mvpLeaders = '';
-    players.slice(0, 3).forEach((player, index) => {
-        mvpLeaders += `${index + 1}. **${player.displayName}**: ${player.mvps} MVPs\n`;
-    });
-    
-    embed.addFields(
-        { name: '⚽ Top Goal Scorers', value: goalScorers || 'No data', inline: false },
-        { name: '👟 Top Assist Providers', value: assistLeaders || 'No data', inline: false },
-        { name: '🏆 MVP Leaders', value: mvpLeaders || 'No data', inline: false }
-    );
-    
-    return embed;
-}
-
-// Define slash commands
+// Define slash commands - Updated to remove direct .setMinValue calls
 const commands = [
     new SlashCommandBuilder()
         .setName('help')
@@ -364,32 +234,72 @@ const commands = [
             option.setName('user')
                 .setDescription('The user to add stats for')
                 .setRequired(true))
-        .addIntegerOption(option =>
-            option.setName('games')
+        .addIntegerOption(option => {
+            const intOption = option.setName('games')
                 .setDescription('Number of games to add')
-                .setRequired(false)
-                .setMinValue(0))
-        .addIntegerOption(option =>
-            option.setName('goals')
+                .setRequired(false);
+            
+            try {
+                // This separates the min value validation to avoid potential validation issues
+                intOption.setMinValue(0);
+            } catch (err) {
+                console.warn('Could not set min value for games option');
+            }
+            
+            return intOption;
+        })
+        .addIntegerOption(option => {
+            const intOption = option.setName('goals')
                 .setDescription('Number of goals to add')
-                .setRequired(false)
-                .setMinValue(0))
-        .addIntegerOption(option =>
-            option.setName('assists')
+                .setRequired(false);
+            
+            try {
+                intOption.setMinValue(0);
+            } catch (err) {
+                console.warn('Could not set min value for goals option');
+            }
+            
+            return intOption;
+        })
+        .addIntegerOption(option => {
+            const intOption = option.setName('assists')
                 .setDescription('Number of assists to add')
-                .setRequired(false)
-                .setMinValue(0))
-        .addIntegerOption(option =>
-            option.setName('saves')
+                .setRequired(false);
+            
+            try {
+                intOption.setMinValue(0);
+            } catch (err) {
+                console.warn('Could not set min value for assists option');
+            }
+            
+            return intOption;
+        })
+        .addIntegerOption(option => {
+            const intOption = option.setName('saves')
                 .setDescription('Number of saves to add')
-                .setRequired(false)
-                .setMinValue(0))
-        .addIntegerOption(option =>
-            option.setName('mvps')
+                .setRequired(false);
+            
+            try {
+                intOption.setMinValue(0);
+            } catch (err) {
+                console.warn('Could not set min value for saves option');
+            }
+            
+            return intOption;
+        })
+        .addIntegerOption(option => {
+            const intOption = option.setName('mvps')
                 .setDescription('Number of MVPs to add')
-                .setRequired(false)
-                .setMinValue
-    ),
+                .setRequired(false);
+            
+            try {
+                intOption.setMinValue(0);
+            } catch (err) {
+                console.warn('Could not set min value for mvps option');
+            }
+            
+            return intOption;
+        }),
 
     new SlashCommandBuilder()
         .setName('removestats')
@@ -398,31 +308,71 @@ const commands = [
             option.setName('user')
                 .setDescription('The user to remove stats from')
                 .setRequired(true))
-        .addIntegerOption(option =>
-            option.setName('games')
+        .addIntegerOption(option => {
+            const intOption = option.setName('games')
                 .setDescription('Number of games to remove')
-                .setRequired(false)
-                .setMinValue(0))
-        .addIntegerOption(option =>
-            option.setName('goals')
+                .setRequired(false);
+            
+            try {
+                intOption.setMinValue(0);
+            } catch (err) {
+                console.warn('Could not set min value for games option');
+            }
+            
+            return intOption;
+        })
+        .addIntegerOption(option => {
+            const intOption = option.setName('goals')
                 .setDescription('Number of goals to remove')
-                .setRequired(false)
-                .setMinValue(0))
-        .addIntegerOption(option =>
-            option.setName('assists')
+                .setRequired(false);
+            
+            try {
+                intOption.setMinValue(0);
+            } catch (err) {
+                console.warn('Could not set min value for goals option');
+            }
+            
+            return intOption;
+        })
+        .addIntegerOption(option => {
+            const intOption = option.setName('assists')
                 .setDescription('Number of assists to remove')
-                .setRequired(false)
-                .setMinValue(0))
-        .addIntegerOption(option =>
-            option.setName('saves')
+                .setRequired(false);
+            
+            try {
+                intOption.setMinValue(0);
+            } catch (err) {
+                console.warn('Could not set min value for assists option');
+            }
+            
+            return intOption;
+        })
+        .addIntegerOption(option => {
+            const intOption = option.setName('saves')
                 .setDescription('Number of saves to remove')
-                .setRequired(false)
-                .setMinValue(0))
-        .addIntegerOption(option =>
-            option.setName('mvps')
+                .setRequired(false);
+            
+            try {
+                intOption.setMinValue(0);
+            } catch (err) {
+                console.warn('Could not set min value for saves option');
+            }
+            
+            return intOption;
+        })
+        .addIntegerOption(option => {
+            const intOption = option.setName('mvps')
                 .setDescription('Number of MVPs to remove')
-                .setRequired(false)
-                .setMinValue(0))
+                .setRequired(false);
+            
+            try {
+                intOption.setMinValue(0);
+            } catch (err) {
+                console.warn('Could not set min value for mvps option');
+            }
+            
+            return intOption;
+        })
 ];
 
 // Add error handling utility function
