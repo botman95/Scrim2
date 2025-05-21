@@ -506,9 +506,6 @@ client.on('interactionCreate', async interaction => {
         
         // Help command
         if (commandName === 'help') {
-            // Defer reply to give more time for processing
-            await interaction.deferReply();
-            
             const embed = createEmbed('Stats Bot Help', 'List of available commands:');
             
             embed.addFields(
@@ -522,15 +519,12 @@ client.on('interactionCreate', async interaction => {
                 { name: '/removestats <user> [goals] [assists] [saves] [games] [mvps]', value: 'Remove stats from a player', inline: false }
             );
             
-            await safeReply(interaction, { embeds: [embed] });
+            await interaction.reply({ embeds: [embed] });
             return;
         }
         
         // Stats command
         if (commandName === 'stats') {
-            // Defer reply to give more time for processing
-            await interaction.deferReply();
-            
             const targetUser = interaction.options.getUser('user') || interaction.user;
             const userId = targetUser.id;
             
@@ -538,8 +532,9 @@ client.on('interactionCreate', async interaction => {
             let player = await db.getPlayer(userId);
             
             if (!player) {
-                await safeReply(interaction, { 
-                    content: `${targetUser.username} is not registered yet. An admin can register them with the \`/register\` command.` 
+                await interaction.reply({ 
+                    content: `${targetUser.username} is not registered yet. An admin can register them with the \`/register\` command.`,
+                    ephemeral: true
                 });
                 return;
             }
@@ -552,23 +547,21 @@ client.on('interactionCreate', async interaction => {
                 embed.setThumbnail(targetUser.displayAvatarURL());
             }
             
-            await safeReply(interaction, { embeds: [embed] });
+            await interaction.reply({ embeds: [embed] });
             return;
         }
         
         // Team command
         if (commandName === 'team') {
-            // Defer reply to give more time for processing
-            await interaction.deferReply();
-            
             const teamName = interaction.options.getString('team');
             
             // Get all players for the team
             const players = await db.getAllPlayers(teamName);
             
             if (players.length === 0) {
-                await safeReply(interaction, { 
-                    content: `No players found for ${teamName}. Use \`/register\` to add players to this team.` 
+                await interaction.reply({ 
+                    content: `No players found for ${teamName}. Use \`/register\` to add players to this team.`,
+                    ephemeral: true
                 });
                 return;
             }
@@ -576,21 +569,19 @@ client.on('interactionCreate', async interaction => {
             // Create the team stats embed
             const embed = teamLeaderboardEmbed(players, teamName);
             
-            await safeReply(interaction, { embeds: [embed] });
+            await interaction.reply({ embeds: [embed] });
             return;
         }
         
         // Leaderboard command
         if (commandName === 'leaderboard') {
-            // Defer reply to give more time for processing
-            await interaction.deferReply();
-            
             // Get all players from both teams
             const players = await db.getAllPlayers();
             
             if (players.length === 0) {
-                await safeReply(interaction, { 
-                    content: `No players registered yet. Use \`/register\` to add players.` 
+                await interaction.reply({ 
+                    content: `No players registered yet. Use \`/register\` to add players.`,
+                    ephemeral: true
                 });
                 return;
             }
@@ -630,18 +621,15 @@ client.on('interactionCreate', async interaction => {
                 { name: '🏆 Top MVP Winners', value: mvpsText || 'No data', inline: false }
             );
             
-            await safeReply(interaction, { embeds: [embed] });
+            await interaction.reply({ embeds: [embed] });
             return;
         }
         
         // Register command (Admin only)
         if (commandName === 'register') {
-            // Defer reply to give more time for processing
-            await interaction.deferReply();
-            
             // Check if user has admin role
             if (!(await isAdmin(interaction.member))) {
-                await safeReply(interaction, { 
+                await interaction.reply({ 
                     content: `You need the "${config.adminRoleName}" role to use this command.`,
                     ephemeral: true 
                 });
@@ -664,12 +652,12 @@ client.on('interactionCreate', async interaction => {
                     players[playerIndex].updatedAt = new Date().toISOString();
                     await db.writePlayersFile(players);
                     
-                    await safeReply(interaction, { 
+                    await interaction.reply({
                         content: `${targetUser.username} has been moved to ${team}.`,
                         ephemeral: false
                     });
                 } else {
-                    await safeReply(interaction, { 
+                    await interaction.reply({ 
                         content: `${targetUser.username} is already registered to ${team}.`,
                         ephemeral: false
                     });
@@ -688,11 +676,11 @@ client.on('interactionCreate', async interaction => {
                     `✅ **${displayName}** has been registered to **${team}**!`, 
                     config.colors.success);
                 
-                await safeReply(interaction, { embeds: [embed] });
+                await interaction.reply({ embeds: [embed] });
             } catch (error) {
                 console.error('Error registering player:', error);
                 
-                await safeReply(interaction, { 
+                await interaction.reply({ 
                     content: `Error registering player: ${error.message}`,
                     ephemeral: true
                 });
@@ -703,12 +691,9 @@ client.on('interactionCreate', async interaction => {
         
         // Add stats command (Admin only)
         if (commandName === 'addstats') {
-            // Defer reply to give more time for processing
-            await interaction.deferReply();
-            
             // Check if user has admin role
             if (!(await isAdmin(interaction.member))) {
-                await safeReply(interaction, { 
+                await interaction.reply({ 
                     content: `You need the "${config.adminRoleName}" role to use this command.`,
                     ephemeral: true 
                 });
@@ -729,7 +714,7 @@ client.on('interactionCreate', async interaction => {
             // Check if any stats were provided
             const totalStats = Object.values(stats).reduce((sum, val) => sum + val, 0);
             if (totalStats === 0) {
-                await safeReply(interaction, { 
+                await interaction.reply({ 
                     content: 'Please provide at least one stat to add.',
                     ephemeral: true
                 });
@@ -740,7 +725,7 @@ client.on('interactionCreate', async interaction => {
             let player = await db.getPlayer(targetUser.id);
             
             if (!player) {
-                await safeReply(interaction, { 
+                await interaction.reply({ 
                     content: `${targetUser.username} is not registered yet. Use \`/register\` first.`,
                     ephemeral: false
                 });
@@ -756,7 +741,8 @@ client.on('interactionCreate', async interaction => {
                 if (stats.gamesPlayed > 0) description += `🎮 **Games**: +${stats.gamesPlayed}\n`;
                 if (stats.goals > 0) description += `⚽ **Goals**: +${stats.goals}\n`;
                 if (stats.assists > 0) description += `👟 **Assists**: +${stats.assists}\n`;
-                if (stats.saves > 0) description += `🧤 **Saves**: +${stats.saves}\n`;if (stats.mvps > 0) description += `🏆 **MVPs**: +${stats.mvps}\n`;
+                if (stats.saves > 0) description += `🧤 **Saves**: +${stats.saves}\n`;
+                if (stats.mvps > 0) description += `🏆 **MVPs**: +${stats.mvps}\n`;
                 
                 description += `\n**New Totals**:\n`;
                 description += `🎮 Games: ${updatedPlayer.gamesPlayed} | `;
@@ -767,11 +753,11 @@ client.on('interactionCreate', async interaction => {
                 
                 const embed = createEmbed('Stats Added', description, config.colors.success);
                 
-                await safeReply(interaction, { embeds: [embed] });
+                await interaction.reply({ embeds: [embed] });
             } catch (error) {
                 console.error('Error adding stats:', error);
                 
-                await safeReply(interaction, { 
+                await interaction.reply({ 
                     content: `Error adding stats: ${error.message}`,
                     ephemeral: true
                 });
@@ -782,12 +768,9 @@ client.on('interactionCreate', async interaction => {
         
         // Remove stats command (Admin only)
         if (commandName === 'removestats') {
-            // Defer reply to give more time for processing
-            await interaction.deferReply();
-            
             // Check if user has admin role
             if (!(await isAdmin(interaction.member))) {
-                await safeReply(interaction, { 
+                await interaction.reply({ 
                     content: `You need the "${config.adminRoleName}" role to use this command.`,
                     ephemeral: true 
                 });
@@ -808,7 +791,7 @@ client.on('interactionCreate', async interaction => {
             // Check if any stats were provided
             const totalStats = Object.values(stats).reduce((sum, val) => sum + val, 0);
             if (totalStats === 0) {
-                await safeReply(interaction, { 
+                await interaction.reply({ 
                     content: 'Please provide at least one stat to remove.',
                     ephemeral: true
                 });
@@ -819,7 +802,7 @@ client.on('interactionCreate', async interaction => {
             let player = await db.getPlayer(targetUser.id);
             
             if (!player) {
-                await safeReply(interaction, { 
+                await interaction.reply({ 
                     content: `${targetUser.username} is not registered yet. Use \`/register\` first.`,
                     ephemeral: false
                 });
@@ -847,11 +830,11 @@ client.on('interactionCreate', async interaction => {
                 
                 const embed = createEmbed('Stats Removed', description, config.colors.success);
                 
-                await safeReply(interaction, { embeds: [embed] });
+                await interaction.reply({ embeds: [embed] });
             } catch (error) {
                 console.error('Error removing stats:', error);
                 
-                await safeReply(interaction, { 
+                await interaction.reply({ 
                     content: `Error removing stats: ${error.message}`,
                     ephemeral: true
                 });
@@ -864,25 +847,32 @@ client.on('interactionCreate', async interaction => {
         // Global error handler for all command processing
         console.error(`Error processing command ${interaction.commandName}:`, error);
         
+        // Log more detailed error information
+        console.error('Full error details:', {
+            name: error.name,
+            message: error.message,
+            stack: error.stack,
+            code: error.code,
+            command: interaction.commandName,
+            user: interaction.user?.username,
+            guild: interaction.guild?.name
+        });
+        
         try {
             // Try to inform the user that something went wrong
-            const errorMessage = error.code === 10062 
-                ? "The response took too long to process. Please try again."
-                : "An error occurred while processing your command. Please try again.";
+            const errorMessage = `An error occurred: ${error.message || 'Unknown error'}`;
                 
-            if (!interaction.replied && !interaction.deferred) {
-                await interaction.reply({ 
-                    content: errorMessage,
-                    ephemeral: true
-                });
-            } else if (interaction.deferred) {
-                await interaction.editReply({ content: errorMessage });
+            if (!interaction.replied && !interaction.deferred)await interaction.reply({ 
+                        content: errorMessage,
+                        ephemeral: true 
+                    });
+            } catch (replyError) {
+                console.error('Failed to send error message:', replyError);
             }
-        } catch (replyError) {
-            console.error('Failed to send error message:', replyError);
         }
     }
-});
+);
+
 
 // Add reconnection handlers
 client.on('disconnect', (event) => {
