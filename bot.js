@@ -317,6 +317,7 @@ const csvUtils = {
     parsePlayerStats: async (csvBuffer) => {
         return new Promise((resolve, reject) => {
             const results = [];
+            const allRows = [];
             const stream = require('stream');
             
             const readable = new stream.Readable();
@@ -330,16 +331,18 @@ const csvUtils = {
                     mapHeaders: ({ header }) => header.trim()
                 }))
                 .on('data', (row) => {
-                    // Skip duplicate header rows that appear in the middle of data
+                    allRows.push(row);
+                    console.log('Raw row data:', JSON.stringify(row, null, 2));
+                    
+                    // Skip duplicate header rows
                     if (row['TEAM COLOR'] === 'TEAM COLOR' || 
                         row.NAME === 'NAME' || 
                         row.GOALS === 'GOALS' ||
                         row['W/L'] === 'W/L') {
                         console.log('Skipping duplicate header row');
-                        return; // Skip this row
+                        return;
                     }
                     
-                    // Clean and validate the row data
                     const cleanRow = {
                         playerName: row.NAME?.trim(),
                         teamColor: row['TEAM COLOR']?.trim(),
@@ -353,21 +356,34 @@ const csvUtils = {
                         playerId: row.PLAYERID?.trim()
                     };
                     
-                    // Validate required fields (skip empty rows too)
+                    console.log('Cleaned row:', {
+                        playerName: cleanRow.playerName,
+                        teamColor: cleanRow.teamColor,
+                        winLoss: cleanRow.winLoss,
+                        hasName: !!cleanRow.playerName,
+                        hasTeamColor: !!cleanRow.teamColor,
+                        hasWinLoss: !!cleanRow.winLoss
+                    });
+                    
+                    // Validate required fields
                     if (cleanRow.playerName && 
                         cleanRow.teamColor && 
                         cleanRow.winLoss &&
                         cleanRow.playerName !== '' &&
                         cleanRow.teamColor !== '' &&
                         cleanRow.winLoss !== '') {
+                        console.log('✅ Valid row added');
                         results.push(cleanRow);
+                    } else {
+                        console.log('❌ Row failed validation');
                     }
                 })
                 .on('end', () => {
-                    console.log(`Parsed ${results.length} valid player rows`);
+                    console.log(`Debug summary: ${allRows.length} total rows, ${results.length} valid rows`);
                     resolve(results);
                 })
                 .on('error', (error) => {
+                    console.error('CSV parsing error:', error);
                     reject(error);
                 });
         });
