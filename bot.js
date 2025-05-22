@@ -26,7 +26,8 @@ const config = {
         aTeam: '#ff5555',
         bTeam: '#5555ff'
     },
-    dataFilePath: path.join(__dirname, 'players.json')
+    dataFilePath: path.join(__dirname, 'players.json'),
+    teamStatsFilePath: path.join(__dirname, 'team-stats.json')
 };
 
 // Initialize Discord client
@@ -69,6 +70,63 @@ const db = {
         } catch (error) {
             console.error('Error writing players file:', error);
         }
+    },
+
+    // Read team stats file
+    readTeamStatsFile: async () => {
+        try {
+            // Ensure the file exists, create if not
+            await fs.access(config.teamStatsFilePath).catch(async () => {
+                const defaultTeamStats = {
+                    'A-Team': { wins: 0, losses: 0 },
+                    'B-Team': { wins: 0, losses: 0 }
+                };
+                await fs.writeFile(config.teamStatsFilePath, JSON.stringify(defaultTeamStats, null, 2));
+            });
+
+            const data = await fs.readFile(config.teamStatsFilePath, 'utf8');
+            return JSON.parse(data);
+        } catch (error) {
+            console.error('Error reading team stats file:', error);
+            return {
+                'A-Team': { wins: 0, losses: 0 },
+                'B-Team': { wins: 0, losses: 0 }
+            };
+        }
+    },
+
+    // Write team stats data to file
+    writeTeamStatsFile: async (teamStats) => {
+        try {
+            await fs.writeFile(config.teamStatsFilePath, JSON.stringify(teamStats, null, 2));
+        } catch (error) {
+            console.error('Error writing team stats file:', error);
+        }
+    },
+
+    // Get team stats
+    getTeamStats: async (teamName) => {
+        const teamStats = await db.readTeamStatsFile();
+        return teamStats[teamName] || { wins: 0, losses: 0 };
+    },
+
+    // Update team stats
+    updateTeamStats: async (teamName, wins = 0, losses = 0) => {
+        const teamStats = await db.readTeamStatsFile();
+        
+        if (!teamStats[teamName]) {
+            teamStats[teamName] = { wins: 0, losses: 0 };
+        }
+        
+        teamStats[teamName].wins += wins;
+        teamStats[teamName].losses += losses;
+        
+        // Ensure no negative values
+        teamStats[teamName].wins = Math.max(0, teamStats[teamName].wins);
+        teamStats[teamName].losses = Math.max(0, teamStats[teamName].losses);
+        
+        await db.writeTeamStatsFile(teamStats);
+        return teamStats[teamName];
     },
 
     // Get a specific player
@@ -181,7 +239,37 @@ const db = {
     }
 };
 
-// Define slash commands - Updated to remove direct .setMinValue calls
+// Achievements definition
+const ACHIEVEMENTS = {
+    goals: [
+        { threshold: 10, name: 'Sniper', emoji: '🎯', description: 'Score 10+ goals' },
+        { threshold: 25, name: 'Sharp Shooter', emoji: '🚀', description: 'Score 25+ goals' },
+        { threshold: 50, name: 'Goal Machine', emoji: '💯', description: 'Score 50+ goals' },
+        { threshold: 100, name: 'Legend', emoji: '🔥', description: 'Score 100+ goals' }
+    ],
+    assists: [
+        { threshold: 10, name: 'Playmaker', emoji: '👟', description: 'Get 10+ assists' },
+        { threshold: 25, name: 'Master Tactician', emoji: '🧠', description: 'Get 25+ assists' },
+        { threshold: 50, name: 'Assist King', emoji: '👑', description: 'Get 50+ assists' }
+    ],
+    saves: [
+        { threshold: 15, name: 'Safe Hands', emoji: '🧤', description: 'Make 15+ saves' },
+        { threshold: 30, name: 'Wall', emoji: '🛡️', description: 'Make 30+ saves' },
+        { threshold: 75, name: 'Guardian', emoji: '🏰', description: 'Make 75+ saves' }
+    ],
+    mvps: [
+        { threshold: 5, name: 'Star Player', emoji: '⭐', description: 'Win 5+ MVPs' },
+        { threshold: 10, name: 'MVP King', emoji: '👑', description: 'Win 10+ MVPs' },
+        { threshold: 20, name: 'Champion', emoji: '🏆', description: 'Win 20+ MVPs' }
+    ],
+    games: [
+        { threshold: 50, name: 'Veteran', emoji: '🎖️', description: 'Play 50+ games' },
+        { threshold: 100, name: 'Dedicated', emoji: '💪', description: 'Play 100+ games' },
+        { threshold: 200, name: 'Unstoppable', emoji: '⚡', description: 'Play 200+ games' }
+    ]
+};
+
+// Define slash commands - Updated to include new commands
 const commands = [
     new SlashCommandBuilder()
         .setName('help')
@@ -197,7 +285,7 @@ const commands = [
     
     new SlashCommandBuilder()
         .setName('team')
-        .setDescription('Shows stats for a team')
+        .setDescription('Shows player leaderboard for a team')
         .addStringOption(option => 
             option.setName('team')
                 .setDescription('The team to check stats for')
@@ -208,8 +296,24 @@ const commands = [
                 )),
 
     new SlashCommandBuilder()
+        .setName('team-stats')
+        .setDescription('Shows win/loss record for a team')
+        .addStringOption(option => 
+            option.setName('team')
+                .setDescription('The team to check win/loss record for')
+                .setRequired(true)
+                .addChoices(
+                    { name: 'A-Team', value: 'A-Team' },
+                    { name: 'B-Team', value: 'B-Team' }
+                )),
+
+    new SlashCommandBuilder()
         .setName('leaderboard')
         .setDescription('Shows the overall leaderboard'),
+    
+    new SlashCommandBuilder()
+        .setName('achievements')
+        .setDescription('Shows all available achievements and how to unlock them'),
     
     new SlashCommandBuilder()
         .setName('register')
@@ -240,7 +344,6 @@ const commands = [
                 .setRequired(false);
             
             try {
-                // This separates the min value validation to avoid potential validation issues
                 intOption.setMinValue(0);
             } catch (err) {
                 console.warn('Could not set min value for games option');
@@ -372,6 +475,56 @@ const commands = [
             }
             
             return intOption;
+        }),
+
+    new SlashCommandBuilder()
+        .setName('team-win')
+        .setDescription('Add a win to a team')
+        .addStringOption(option =>
+            option.setName('team')
+                .setDescription('The team that won')
+                .setRequired(true)
+                .addChoices(
+                    { name: 'A-Team', value: 'A-Team' },
+                    { name: 'B-Team', value: 'B-Team' }
+                ))
+        .addIntegerOption(option => {
+            const intOption = option.setName('wins')
+                .setDescription('Number of wins to add (default: 1)')
+                .setRequired(false);
+            
+            try {
+                intOption.setMinValue(1);
+            } catch (err) {
+                console.warn('Could not set min value for wins option');
+            }
+            
+            return intOption;
+        }),
+
+    new SlashCommandBuilder()
+        .setName('team-loss')
+        .setDescription('Add a loss to a team')
+        .addStringOption(option =>
+            option.setName('team')
+                .setDescription('The team that lost')
+                .setRequired(true)
+                .addChoices(
+                    { name: 'A-Team', value: 'A-Team' },
+                    { name: 'B-Team', value: 'B-Team' }
+                ))
+        .addIntegerOption(option => {
+            const intOption = option.setName('losses')
+                .setDescription('Number of losses to add (default: 1)')
+                .setRequired(false);
+            
+            try {
+                intOption.setMinValue(1);
+            } catch (err) {
+                console.warn('Could not set min value for losses option');
+            }
+            
+            return intOption;
         })
 ];
 
@@ -460,6 +613,7 @@ client.once('ready', () => {
         }
     }, 2 * 60 * 1000); // Every 2 minutes
 });
+
 // Check if user has admin role
 async function isAdmin(member) {
     if (!member) return false;
@@ -479,6 +633,7 @@ async function isAdmin(member) {
         return false;
     }
 }
+
 async function getDisplayName(userId, interaction) {
     try {
         // Get the member from the guild
@@ -497,6 +652,7 @@ async function getDisplayName(userId, interaction) {
         }
     }
 }
+
 // Create embeds for nice looking messages
 function createEmbed(title, description = null, color = config.colors.primary) {
     const embed = new EmbedBuilder()
@@ -516,20 +672,40 @@ function createEmbed(title, description = null, color = config.colors.primary) {
 function calculateAchievements(player) {
     const achievements = [];
     
-    if (player.goals >= 10) achievements.push('🎯 Sniper (10+ goals)');
-    if (player.goals >= 25) achievements.push('🚀 Sharp Shooter (25+ goals)');
-    if (player.goals >= 50) achievements.push('💯 Goal Machine (50+ goals)');
-    
-    if (player.assists >= 10) achievements.push('👟 Playmaker (10+ assists)');
-    if (player.assists >= 25) achievements.push('🧠 Master Tactician (25+ assists)');
-    
-    if (player.saves >= 15) achievements.push('🧤 Safe Hands (15+ saves)');
-    if (player.saves >= 30) achievements.push('🛡️ Wall (30+ saves)');
-    
-    if (player.mvps >= 5) achievements.push('⭐ Star Player (5+ MVPs)');
-    if (player.mvps >= 10) achievements.push('👑 MVP King (10+ MVPs)');
+    // Check each achievement category
+    Object.keys(ACHIEVEMENTS).forEach(category => {
+        const playerStat = category === 'games' ? player.gamesPlayed : player[category];
+        
+        ACHIEVEMENTS[category].forEach(achievement => {
+            if (playerStat >= achievement.threshold) {
+                achievements.push(`${achievement.emoji} ${achievement.name}`);
+            }
+        });
+    });
     
     return achievements.length ? achievements.join('\n') : 'No achievements yet';
+}
+
+// Create achievements list embed
+function createAchievementsEmbed() {
+    const embed = createEmbed('🏆 Available Achievements', 'Complete these challenges to unlock achievements!');
+    
+    Object.keys(ACHIEVEMENTS).forEach(category => {
+        const categoryName = category.charAt(0).toUpperCase() + category.slice(1);
+        let achievementsList = '';
+        
+        ACHIEVEMENTS[category].forEach(achievement => {
+            achievementsList += `${achievement.emoji} **${achievement.name}**: ${achievement.description}\n`;
+        });
+        
+        embed.addFields({
+            name: `${categoryName} Achievements`,
+            value: achievementsList,
+            inline: false
+        });
+    });
+    
+    return embed;
 }
 
 // Create player stats embed
@@ -594,6 +770,28 @@ function teamLeaderboardEmbed(players, teamName) {
     
     return embed;
 }
+
+// Create team stats embed (wins/losses)
+function teamStatsEmbed(teamName, teamStats) {
+    const teamColor = teamName === 'A-Team' ? config.colors.aTeam : config.colors.bTeam;
+    const totalGames = teamStats.wins + teamStats.losses;
+    const winRate = totalGames > 0 ? ((teamStats.wins / totalGames) * 100).toFixed(1) : '0.0';
+    
+    return new EmbedBuilder()
+        .setColor(teamColor)
+        .setTitle(`${teamName} Record`)
+        .setDescription(`Win/Loss statistics for ${teamName}`)
+        .addFields(
+            { name: '🏆 Wins', value: teamStats.wins.toString(), inline: true },
+            { name: '💀 Losses', value: teamStats.losses.toString(), inline: true },
+            { name: '🎮 Total Games', value: totalGames.toString(), inline: true },
+            { name: '📊 Win Rate', value: `${winRate}%`, inline: true },
+            { name: '📈 Record', value: `${teamStats.wins}-${teamStats.losses}`, inline: true }
+        )
+        .setFooter({ text: 'Stats Bot', iconURL: 'https://i.imgur.com/wSTFkRM.png' })
+        .setTimestamp();
+}
+
 // Interaction handler
 client.on('interactionCreate', async interaction => {
     if (!interaction.isChatInputCommand()) return;
@@ -608,14 +806,25 @@ client.on('interactionCreate', async interaction => {
             embed.addFields(
                 { name: '/help', value: 'Shows this help message', inline: false },
                 { name: '/stats [user]', value: 'Shows stats for a user (or yourself if no user is specified)', inline: false },
-                { name: '/team <team>', value: 'Shows stats for a specific team (A-Team or B-Team)', inline: false },
+                { name: '/team <team>', value: 'Shows player leaderboard for a specific team', inline: false },
+                { name: '/team-stats <team>', value: 'Shows win/loss record for a specific team', inline: false },
                 { name: '/leaderboard', value: 'Shows the overall leaderboard across both teams', inline: false },
+                { name: '/achievements', value: 'Shows all available achievements and how to unlock them', inline: false },
                 { name: '**Admin Commands**', value: 'The following commands require the Scrimster role:', inline: false },
                 { name: '/register <user> <team>', value: 'Register a new player to a team', inline: false },
                 { name: '/addstats <user> [goals] [assists] [saves] [games] [mvps]', value: 'Add stats for a player', inline: false },
-                { name: '/removestats <user> [goals] [assists] [saves] [games] [mvps]', value: 'Remove stats from a player', inline: false }
+                { name: '/removestats <user> [goals] [assists] [saves] [games] [mvps]', value: 'Remove stats from a player', inline: false },
+                { name: '/team-win <team> [wins]', value: 'Add win(s) to a team record', inline: false },
+                { name: '/team-loss <team> [losses]', value: 'Add loss(es) to a team record', inline: false }
             );
             
+            await interaction.reply({ embeds: [embed] });
+            return;
+        }
+        
+        // Achievements command
+        if (commandName === 'achievements') {
+            const embed = createAchievementsEmbed();
             await interaction.reply({ embeds: [embed] });
             return;
         }
@@ -648,7 +857,7 @@ client.on('interactionCreate', async interaction => {
             return;
         }
         
-        // Team command
+        // Team command (player leaderboard)
         if (commandName === 'team') {
             const teamName = interaction.options.getString('team');
             
@@ -665,6 +874,20 @@ client.on('interactionCreate', async interaction => {
             
             // Create the team stats embed
             const embed = teamLeaderboardEmbed(players, teamName);
+            
+            await interaction.reply({ embeds: [embed] });
+            return;
+        }
+        
+        // Team stats command (wins/losses)
+        if (commandName === 'team-stats') {
+            const teamName = interaction.options.getString('team');
+            
+            // Get team stats
+            const teamStats = await db.getTeamStats(teamName);
+            
+            // Create the team stats embed
+            const embed = teamStatsEmbed(teamName, teamStats);
             
             await interaction.reply({ embeds: [embed] });
             return;
@@ -940,6 +1163,76 @@ client.on('interactionCreate', async interaction => {
             return;
         }
         
+        // Team win command (Admin only)
+        if (commandName === 'team-win') {
+            // Check if user has admin role
+            if (!(await isAdmin(interaction.member))) {
+                await interaction.reply({ 
+                    content: `You need the "${config.adminRoleName}" role to use this command.`,
+                    ephemeral: true 
+                });
+                return;
+            }
+            
+            const teamName = interaction.options.getString('team');
+            const wins = interaction.options.getInteger('wins') || 1;
+            
+            try {
+                const updatedStats = await db.updateTeamStats(teamName, wins, 0);
+                
+                const embed = createEmbed('Team Win Added', 
+                    `🏆 **${teamName}** has been awarded ${wins} win${wins > 1 ? 's' : ''}!\n\n` +
+                    `**Updated Record**: ${updatedStats.wins}-${updatedStats.losses}`, 
+                    config.colors.success);
+                
+                await interaction.reply({ embeds: [embed] });
+            } catch (error) {
+                console.error('Error adding team win:', error);
+                
+                await interaction.reply({ 
+                    content: `Error adding team win: ${error.message}`,
+                    ephemeral: true
+                });
+            }
+            
+            return;
+        }
+        
+        // Team loss command (Admin only)
+        if (commandName === 'team-loss') {
+            // Check if user has admin role
+            if (!(await isAdmin(interaction.member))) {
+                await interaction.reply({ 
+                    content: `You need the "${config.adminRoleName}" role to use this command.`,
+                    ephemeral: true 
+                });
+                return;
+            }
+            
+            const teamName = interaction.options.getString('team');
+            const losses = interaction.options.getInteger('losses') || 1;
+            
+            try {
+                const updatedStats = await db.updateTeamStats(teamName, 0, losses);
+                
+                const embed = createEmbed('Team Loss Added', 
+                    `💀 **${teamName}** has been given ${losses} loss${losses > 1 ? 'es' : ''}.\n\n` +
+                    `**Updated Record**: ${updatedStats.wins}-${updatedStats.losses}`, 
+                    config.colors.success);
+                
+                await interaction.reply({ embeds: [embed] });
+            } catch (error) {
+                console.error('Error adding team loss:', error);
+                
+                await interaction.reply({ 
+                    content: `Error adding team loss: ${error.message}`,
+                    ephemeral: true
+                });
+            }
+            
+            return;
+        }
+        
     } catch (error) {
         // Global error handler for all command processing
         console.error(`Error processing command ${interaction.commandName}:`, error);
@@ -959,17 +1252,17 @@ client.on('interactionCreate', async interaction => {
             // Try to inform the user that something went wrong
             const errorMessage = `An error occurred: ${error.message || 'Unknown error'}`;
                 
-            if (!interaction.replied && !interaction.deferred)await interaction.reply({ 
-                        content: errorMessage,
-                        ephemeral: true 
-                    });
-            } catch (replyError) {
-                console.error('Failed to send error message:', replyError);
+            if (!interaction.replied && !interaction.deferred) {
+                await interaction.reply({ 
+                    content: errorMessage,
+                    ephemeral: true 
+                });
             }
+        } catch (replyError) {
+            console.error('Failed to send error message:', replyError);
         }
     }
-);
-
+});
 
 // Add reconnection handlers
 client.on('disconnect', (event) => {
