@@ -317,7 +317,6 @@ const csvUtils = {
     parsePlayerStats: async (csvBuffer) => {
         return new Promise((resolve, reject) => {
             const results = [];
-            const allRows = [];
             const stream = require('stream');
             
             const readable = new stream.Readable();
@@ -331,38 +330,35 @@ const csvUtils = {
                     mapHeaders: ({ header }) => header.trim()
                 }))
                 .on('data', (row) => {
-                    allRows.push(row);
-                    console.log('Raw row data:', JSON.stringify(row, null, 2));
-                    
-                    // Skip duplicate header rows
-                    if (row['TEAM COLOR'] === 'TEAM COLOR' || 
-                        row.NAME === 'NAME' || 
-                        row.GOALS === 'GOALS' ||
-                        row['W/L'] === 'W/L') {
+                    // Skip duplicate header rows using the _0 column (first column)
+                    if (row._0 === 'TEAM COLOR') {
                         console.log('Skipping duplicate header row');
                         return;
                     }
                     
+                    // Skip empty rows
+                    if (!row._0 || row._0.trim() === '') {
+                        return;
+                    }
+                    
+                    // Access data using the _0, _1, _2... column names
                     const cleanRow = {
-                        playerName: row.NAME?.trim(),
-                        teamColor: row['TEAM COLOR']?.trim(),
-                        goals: parseInt(row.GOALS) || 0,
-                        assists: parseInt(row.ASSISTS) || 0,
-                        saves: parseInt(row.SAVES) || 0,
-                        shots: parseInt(row.SHOTS) || 0,
-                        demos: parseInt(row.DEMOS) || 0,
-                        winLoss: row['W/L']?.trim(),
-                        timestamp: row.TIMESTAMP?.trim(),
-                        playerId: row.PLAYERID?.trim()
+                        playerName: row._1?.trim(),      // _1 = NAME column
+                        teamColor: row._0?.trim(),       // _0 = TEAM COLOR column  
+                        goals: parseInt(row._2) || 0,    // _2 = GOALS column
+                        assists: parseInt(row._3) || 0,  // _3 = ASSISTS column
+                        saves: parseInt(row._4) || 0,    // _4 = SAVES column
+                        shots: parseInt(row._5) || 0,    // _5 = SHOTS column
+                        demos: parseInt(row._6) || 0,    // _6 = DEMOS column
+                        winLoss: row._10?.trim(),        // _10 = W/L column
+                        timestamp: row._11?.trim(),      // _11 = TIMESTAMP column
+                        playerId: row._12?.trim()        // _12 = PLAYERID column
                     };
                     
                     console.log('Cleaned row:', {
                         playerName: cleanRow.playerName,
                         teamColor: cleanRow.teamColor,
-                        winLoss: cleanRow.winLoss,
-                        hasName: !!cleanRow.playerName,
-                        hasTeamColor: !!cleanRow.teamColor,
-                        hasWinLoss: !!cleanRow.winLoss
+                        winLoss: cleanRow.winLoss
                     });
                     
                     // Validate required fields
@@ -379,7 +375,7 @@ const csvUtils = {
                     }
                 })
                 .on('end', () => {
-                    console.log(`Debug summary: ${allRows.length} total rows, ${results.length} valid rows`);
+                    console.log(`Debug summary: ${results.length} valid rows found`);
                     resolve(results);
                 })
                 .on('error', (error) => {
