@@ -392,6 +392,7 @@ const csvUtils = {
                         saves: parseInt(row._4) || 0,    // _4 = SAVES column
                         shots: parseInt(row._5) || 0,    // _5 = SHOTS column
                         demos: parseInt(row._6) || 0,    // _6 = DEMOS column
+                        score: parseInt(row._7) || 0,    // _7 = SCORE column (ADD this line)
                         winLoss: row._10?.trim(),        // _10 = W/L column
                         timestamp: row._11?.trim(),      // _11 = TIMESTAMP column
                         playerId: row._12?.trim()        // _12 = PLAYERID column
@@ -466,6 +467,9 @@ const csvUtils = {
         const playerStats = {};
         const newGamesCount = { total: 0, duplicates: 0 };
         
+        // Group games by timestamp to identify unique matches
+        const gamesByMatch = {};
+        
         for (const row of gameData) {
             const playerKey = row.playerName.toLowerCase();
             
@@ -482,6 +486,12 @@ const csvUtils = {
             await db.markGameAsImported(row.timestamp, row.playerId);
             newGamesCount.total++;
             
+            // Group by match timestamp to find MVPs later
+            if (!gamesByMatch[row.timestamp]) {
+                gamesByMatch[row.timestamp] = [];
+            }
+            gamesByMatch[row.timestamp].push(row);
+            
             if (!playerStats[playerKey]) {
                 playerStats[playerKey] = {
                     playerName: row.playerName,
@@ -493,6 +503,7 @@ const csvUtils = {
                     totalSaves: 0,
                     totalShots: 0,
                     totalDemos: 0,
+                    totalMvps: 0,  // Track MVPs
                     lastSeen: row.timestamp,
                     playerId: row.playerId
                 };
@@ -518,6 +529,28 @@ const csvUtils = {
             // Update last seen timestamp
             if (row.timestamp && (!player.lastSeen || row.timestamp > player.lastSeen)) {
                 player.lastSeen = row.timestamp;
+            }
+        }
+        
+        // NEW: Calculate MVPs for each match
+        for (const [timestamp, matchPlayers] of Object.entries(gamesByMatch)) {
+            // Find winning team
+            const winningPlayers = matchPlayers.filter(p => p.winLoss.toUpperCase() === 'WIN');
+            
+            if (winningPlayers.length > 0) {
+                // Find highest scoring player on winning team
+                const mvpPlayer = winningPlayers.reduce((highest, current) => {
+                    const currentScore = parseInt(current.score) || 0;
+                    const highestScore = parseInt(highest.score) || 0;
+                    return currentScore > highestScore ? current : highest;
+                });
+                
+                // Award MVP
+                const mvpKey = mvpPlayer.playerName.toLowerCase();
+                if (playerStats[mvpKey]) {
+                    playerStats[mvpKey].totalMvps++;
+                    console.log(`MVP awarded to ${mvpPlayer.playerName} (Score: ${mvpPlayer.score}) in match at ${timestamp}`);
+                }
             }
         }
         
@@ -1304,12 +1337,13 @@ client.on('interactionCreate', async interaction => {
                 let imported = 0;
                 let updated = 0;
                 let errors = [];
-
+                const processedMatches = new Set(); // NEW: Track unique matches
+                
                 for (const playerData of mappedPlayers) {
                     try {
                         // Check if player exists in bot database
                         let existingPlayer = await db.getPlayer(playerData.discordId);
-
+                
                         // Determine team assignment
                         let assignedTeam = null;
                         if (teamAssignment === 'orange-a') {
@@ -1327,7 +1361,7 @@ client.on('interactionCreate', async interaction => {
                             // Manual assignment - use existing team or default to A-Team
                             assignedTeam = existingPlayer?.team || 'A-Team';
                         }
-
+                
                         if (existingPlayer) {
                             // Update existing player stats
                             const stats = {
@@ -1336,19 +1370,11 @@ client.on('interactionCreate', async interaction => {
                                 assists: playerData.totalAssists,
                                 saves: playerData.totalSaves,
                                 shots: playerData.totalShots,
-                                demos: playerData.totalDemos
+                                demos: playerData.totalDemos,
+                                mvps: playerData.totalMvps  // ADD this line
                             };
-
+                        
                             await db.updatePlayerStats(playerData.discordId, stats);
-                            
-                            // Update team wins/losses
-                            if (playerData.wins > 0) {
-                                await db.updateTeamStats(assignedTeam, playerData.wins, 0);
-                            }
-                            if (playerData.losses > 0) {
-                                await db.updateTeamStats(assignedTeam, 0, playerData.losses);
-                            }
-                            
                             updated++;
                         } else {
                             // Create new player
@@ -1361,21 +1387,35 @@ client.on('interactionCreate', async interaction => {
                                 assists: playerData.totalAssists,
                                 saves: playerData.totalSaves,
                                 shots: playerData.totalShots,
-                                demos: playerData.totalDemos
+                                demos: playerData.totalDemos,
+                                mvps: playerData.totalMvps  // ADD this line
                             };
                             
                             await db.updatePlayerStats(playerData.discordId, stats);
-                            
-                            // Update team wins/losses
-                            if (playerData.wins > 0) {
-                                await db.updateTeamStats(assignedTeam, playerData.wins, 0);
-                            }
-                            if (playerData.losses > 0) {
-                                await db.updateTeamStats(assignedTeam, 0, playerData.losses);
-                            }
-                            
                             imported++;
                         }
+                
+                        // NEW: Handle team wins/losses ONCE per unique match
+                        const playerMatches = csvData.filter(game => 
+                            game.playerName.toLowerCase() === playerData.playerName.toLowerCase()
+                        );
+                        
+                        for (const match of playerMatches) {
+                            // Create unique key: timestamp + team + result
+                            const matchKey = `${match.timestamp}_${assignedTeam}_${match.winLoss}`;
+                            
+                            if (!processedMatches.has(matchKey)) {
+                                processedMatches.add(matchKey);
+                                
+                                // Count this as ONE team win/loss (not per player)
+                                if (match.winLoss.toUpperCase() === 'WIN') {
+                                    await db.updateTeamStats(assignedTeam, 1, 0);
+                                } else if (match.winLoss.toUpperCase() === 'LOSS') {
+                                    await db.updateTeamStats(assignedTeam, 0, 1);
+                                }
+                            }
+                        }
+                        
                     } catch (error) {
                         errors.push(`Error processing ${playerData.playerName}: ${error.message}`);
                     }
