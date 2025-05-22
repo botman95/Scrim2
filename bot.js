@@ -110,16 +110,16 @@ const db = {
         return teamStats[teamName] || { wins: 0, losses: 0 };
     },
 
-    // Update team stats
-    updateTeamStats: async (teamName, wins = 0, losses = 0) => {
+    // Remove team stats (supports negative values for removal)
+    removeTeamStats: async (teamName, wins = 0, losses = 0) => {
         const teamStats = await db.readTeamStatsFile();
         
         if (!teamStats[teamName]) {
             teamStats[teamName] = { wins: 0, losses: 0 };
         }
         
-        teamStats[teamName].wins += wins;
-        teamStats[teamName].losses += losses;
+        teamStats[teamName].wins -= wins;
+        teamStats[teamName].losses -= losses;
         
         // Ensure no negative values
         teamStats[teamName].wins = Math.max(0, teamStats[teamName].wins);
@@ -525,6 +525,56 @@ const commands = [
             }
             
             return intOption;
+        }),
+
+    new SlashCommandBuilder()
+        .setName('team-remove-win')
+        .setDescription('Remove wins from a team')
+        .addStringOption(option =>
+            option.setName('team')
+                .setDescription('The team to remove wins from')
+                .setRequired(true)
+                .addChoices(
+                    { name: 'A-Team', value: 'A-Team' },
+                    { name: 'B-Team', value: 'B-Team' }
+                ))
+        .addIntegerOption(option => {
+            const intOption = option.setName('wins')
+                .setDescription('Number of wins to remove (default: 1)')
+                .setRequired(false);
+            
+            try {
+                intOption.setMinValue(1);
+            } catch (err) {
+                console.warn('Could not set min value for wins option');
+            }
+            
+            return intOption;
+        }),
+
+    new SlashCommandBuilder()
+        .setName('team-remove-loss')
+        .setDescription('Remove losses from a team')
+        .addStringOption(option =>
+            option.setName('team')
+                .setDescription('The team to remove losses from')
+                .setRequired(true)
+                .addChoices(
+                    { name: 'A-Team', value: 'A-Team' },
+                    { name: 'B-Team', value: 'B-Team' }
+                ))
+        .addIntegerOption(option => {
+            const intOption = option.setName('losses')
+                .setDescription('Number of losses to remove (default: 1)')
+                .setRequired(false);
+            
+            try {
+                intOption.setMinValue(1);
+            } catch (err) {
+                console.warn('Could not set min value for losses option');
+            }
+            
+            return intOption;
         })
 ];
 
@@ -815,10 +865,82 @@ client.on('interactionCreate', async interaction => {
                 { name: '/addstats <user> [goals] [assists] [saves] [games] [mvps]', value: 'Add stats for a player', inline: false },
                 { name: '/removestats <user> [goals] [assists] [saves] [games] [mvps]', value: 'Remove stats from a player', inline: false },
                 { name: '/team-win <team> [wins]', value: 'Add win(s) to a team record', inline: false },
-                { name: '/team-loss <team> [losses]', value: 'Add loss(es) to a team record', inline: false }
+                { name: '/team-loss <team> [losses]', value: 'Add loss(es) to a team record', inline: false },
+                { name: '/team-remove-win <team> [wins]', value: 'Remove win(s) from a team record', inline: false },
+                { name: '/team-remove-loss <team> [losses]', value: 'Remove loss(es) from a team record', inline: false }
             );
             
             await interaction.reply({ embeds: [embed] });
+            return;
+        }
+        
+        // Team remove win command (Admin only)
+        if (commandName === 'team-remove-win') {
+            // Check if user has admin role
+            if (!(await isAdmin(interaction.member))) {
+                await interaction.reply({ 
+                    content: `You need the "${config.adminRoleName}" role to use this command.`,
+                    ephemeral: true 
+                });
+                return;
+            }
+            
+            const teamName = interaction.options.getString('team');
+            const wins = interaction.options.getInteger('wins') || 1;
+            
+            try {
+                const updatedStats = await db.removeTeamStats(teamName, wins, 0);
+                
+                const embed = createEmbed('Team Wins Removed', 
+                    `🔄 **${teamName}** has had ${wins} win${wins > 1 ? 's' : ''} removed.\n\n` +
+                    `**Updated Record**: ${updatedStats.wins}-${updatedStats.losses}`, 
+                    config.colors.success);
+                
+                await interaction.reply({ embeds: [embed] });
+            } catch (error) {
+                console.error('Error removing team wins:', error);
+                
+                await interaction.reply({ 
+                    content: `Error removing team wins: ${error.message}`,
+                    ephemeral: true
+                });
+            }
+            
+            return;
+        }
+        
+        // Team remove loss command (Admin only)
+        if (commandName === 'team-remove-loss') {
+            // Check if user has admin role
+            if (!(await isAdmin(interaction.member))) {
+                await interaction.reply({ 
+                    content: `You need the "${config.adminRoleName}" role to use this command.`,
+                    ephemeral: true 
+                });
+                return;
+            }
+            
+            const teamName = interaction.options.getString('team');
+            const losses = interaction.options.getInteger('losses') || 1;
+            
+            try {
+                const updatedStats = await db.removeTeamStats(teamName, 0, losses);
+                
+                const embed = createEmbed('Team Losses Removed', 
+                    `🔄 **${teamName}** has had ${losses} loss${losses > 1 ? 'es' : ''} removed.\n\n` +
+                    `**Updated Record**: ${updatedStats.wins}-${updatedStats.losses}`, 
+                    config.colors.success);
+                
+                await interaction.reply({ embeds: [embed] });
+            } catch (error) {
+                console.error('Error removing team losses:', error);
+                
+                await interaction.reply({ 
+                    content: `Error removing team losses: ${error.message}`,
+                    ephemeral: true
+                });
+            }
+            
             return;
         }
         
