@@ -1395,93 +1395,71 @@ if (commandName === 'help') {
                 // Try to map players to Discord users
                 const { mappedPlayers, unmappedPlayers } = await csvUtils.mapPlayersToDiscord(aggregatedStats, interaction);
 
-                // Process mapped players
-                let imported = 0;
-                let updated = 0;
-                let errors = [];
-                const processedMatches = new Set(); // NEW: Track unique matches
-                
-                for (const playerData of mappedPlayers) {
-                    try {
-                        // Check if player exists in bot database
-                        let existingPlayer = await db.getPlayer(playerData.discordId);
-                
-                        // Determine team assignment
-                        let assignedTeam = null;
-                        if (teamAssignment === 'orange-a') {
-                            // Most recent team color determines assignment
-                            const lastGame = csvData.filter(game => 
-                                game.playerName.toLowerCase() === playerData.playerName.toLowerCase()
-                            ).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0];
-                            assignedTeam = lastGame?.teamColor?.toLowerCase() === 'orange' ? 'A-Team' : 'B-Team';
-                        } else if (teamAssignment === 'orange-b') {
-                            const lastGame = csvData.filter(game => 
-                                game.playerName.toLowerCase() === playerData.playerName.toLowerCase()
-                            ).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0];
-                            assignedTeam = lastGame?.teamColor?.toLowerCase() === 'orange' ? 'B-Team' : 'A-Team';
-                        } else {
-                            // Manual assignment - use existing team or default to A-Team
-                            assignedTeam = existingPlayer?.team || 'A-Team';
-                        }
-                
-                        if (existingPlayer) {
-                            // Update existing player stats
-                            const stats = {
-                                gamesPlayed: playerData.totalGames,
-                                goals: playerData.totalGoals,
-                                assists: playerData.totalAssists,
-                                saves: playerData.totalSaves,
-                                shots: playerData.totalShots,
-                                demos: playerData.totalDemos,
-                                mvps: playerData.totalMvps  // ADD this line
-                            };
-                        
-                            await db.updatePlayerStats(playerData.discordId, stats);
-                            updated++;
-                        } else {
-                            // Create new player
-                            await db.createPlayer(playerData.discordId, playerData.displayName, assignedTeam);
-                            
-                            // Add stats
-                            const stats = {
-                                gamesPlayed: playerData.totalGames,
-                                goals: playerData.totalGoals,
-                                assists: playerData.totalAssists,
-                                saves: playerData.totalSaves,
-                                shots: playerData.totalShots,
-                                demos: playerData.totalDemos,
-                                mvps: playerData.totalMvps  // ADD this line
-                            };
-                            
-                            await db.updatePlayerStats(playerData.discordId, stats);
-                            imported++;
-                        }
-                
-                        // NEW: Handle team wins/losses ONCE per unique match
-                        const playerMatches = csvData.filter(game => 
-                            game.playerName.toLowerCase() === playerData.playerName.toLowerCase()
-                        );
-                        
-                        for (const match of playerMatches) {
-                            // Create unique key: timestamp + team + result
-                            const matchKey = `${match.timestamp}_${assignedTeam}_${match.winLoss}`;
-                            
-                            if (!processedMatches.has(matchKey)) {
-                                processedMatches.add(matchKey);
-                                
-                                // Count this as ONE team win/loss (not per player)
-                                if (match.winLoss.toUpperCase() === 'WIN') {
-                                    await db.updateTeamStats(assignedTeam, 1, 0);
-                                } else if (match.winLoss.toUpperCase() === 'LOSS') {
-                                    await db.updateTeamStats(assignedTeam, 0, 1);
-                                }
-                            }
-                        }
-                        
-                    } catch (error) {
-                        errors.push(`Error processing ${playerData.playerName}: ${error.message}`);
-                    }
-                }
+// Process mapped players
+let imported = 0;
+let updated = 0;
+let errors = [];
+
+for (const playerData of mappedPlayers) {
+    try {
+        // Check if player exists in bot database
+        let existingPlayer = await db.getPlayer(playerData.discordId);
+
+        // Determine team assignment
+        let assignedTeam = null;
+        if (teamAssignment === 'orange-a') {
+            // Most recent team color determines assignment
+            const lastGame = csvData.filter(game => 
+                game.playerName.toLowerCase() === playerData.playerName.toLowerCase()
+            ).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0];
+            assignedTeam = lastGame?.teamColor?.toLowerCase() === 'orange' ? 'A-Team' : 'B-Team';
+        } else if (teamAssignment === 'orange-b') {
+            const lastGame = csvData.filter(game => 
+                game.playerName.toLowerCase() === playerData.playerName.toLowerCase()
+            ).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))[0];
+            assignedTeam = lastGame?.teamColor?.toLowerCase() === 'orange' ? 'B-Team' : 'A-Team';
+        } else {
+            // Manual assignment - use existing team or default to A-Team
+            assignedTeam = existingPlayer?.team || 'A-Team';
+        }
+
+        if (existingPlayer) {
+            // Update existing player stats
+            const stats = {
+                gamesPlayed: playerData.totalGames,
+                goals: playerData.totalGoals,
+                assists: playerData.totalAssists,
+                saves: playerData.totalSaves,
+                shots: playerData.totalShots,
+                demos: playerData.totalDemos,
+                mvps: playerData.totalMvps
+            };
+        
+            await db.updatePlayerStats(playerData.discordId, stats);
+            updated++;
+        } else {
+            // Create new player
+            await db.createPlayer(playerData.discordId, playerData.displayName, assignedTeam);
+            
+            // Add stats
+            const stats = {
+                gamesPlayed: playerData.totalGames,
+                goals: playerData.totalGoals,
+                assists: playerData.totalAssists,
+                saves: playerData.totalSaves,
+                shots: playerData.totalShots,
+                demos: playerData.totalDemos,
+                mvps: playerData.totalMvps
+            };
+            
+            await db.updatePlayerStats(playerData.discordId, stats);
+            imported++;
+        }
+
+    } catch (error) {
+        errors.push(`Error processing ${playerData.playerName}: ${error.message}`);
+    }
+}
 
                 // Create success embed
                 const embed = createEmbed('Rocket League Stats Import Complete', null, config.colors.success);
