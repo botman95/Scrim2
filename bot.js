@@ -1120,54 +1120,72 @@ if (commandName === 'help') {
     const embed = createEmbed('Stats Bot Help', 'List of available commands:');
     
     embed.addFields(
-        // Basic Commands Section
-        { name: '📊 **Basic Commands**', value: '\u200B', inline: false },
-        { name: '/help', value: 'Shows this help message', inline: true },
-        { name: '/stats [user]', value: 'Shows stats for a user (or yourself if no user specified)', inline: true },
-        { name: '/leaderboard', value: 'Shows the overall leaderboard across both teams', inline: true },
+        // Basic Commands - Combined into fewer fields
+        { 
+            name: '📊 **Basic Commands**', 
+            value: '`/help` - Shows this help message\n' +
+                   '`/stats [user]` - Shows stats for a user\n' +
+                   '`/leaderboard` - Shows overall leaderboard\n' +
+                   '`/achievements` - Shows available achievements', 
+            inline: false 
+        },
         
-        // Team Commands Section  
-        { name: '🏆 **Team Commands**', value: '\u200B', inline: false },
-        { name: '/team <team>', value: 'Shows player leaderboard for a specific team', inline: true },
-        { name: '/team-stats <team>', value: 'Shows win/loss record for a specific team', inline: true },
-        { name: '/achievements', value: 'Shows all available achievements and how to unlock them', inline: true },
+        // Team Commands
+        { 
+            name: '🏆 **Team Commands**', 
+            value: '`/team <team>` - Shows player leaderboard for a team\n' +
+                   '`/team-stats <team>` - Shows win/loss record for a team\n' +
+                   '`/show-links` - Shows current player name mappings\n' +
+                   '`/rl-csv-template` - Get CSV template file', 
+            inline: false 
+        },
         
-        // Utility Commands Section
-        { name: '🔧 **Utility Commands**', value: '\u200B', inline: false },
-        { name: '/show-links', value: 'Shows all current player name mappings', inline: true },
-        { name: '/rl-csv-template', value: 'Get a Rocket League CSV template file', inline: true },
-        { name: '\u200B', value: '\u200B', inline: true }, // Empty field for spacing
-        
-        // Admin Commands Section
-        { name: '⚙️ **Admin Commands**', value: 'The following commands require the Scrimster role:', inline: false },
+        // Admin Commands Header
+        { 
+            name: '⚙️ **Admin Commands**', 
+            value: 'The following commands require the Scrimster role:', 
+            inline: false 
+        },
         
         // Player Management
-        { name: '👥 *Player Management*', value: '\u200B', inline: false },
-        { name: '/register <user> <team>', value: 'Register a new player to a team', inline: true },
-        { name: '/link-player <user> <name>', value: 'Link an in-game name to a Discord user', inline: true },
-        { name: '/unlink-player <name>', value: 'Remove player name mapping', inline: true },
+        { 
+            name: '👥 **Player Management**', 
+            value: '`/register <user> <team>` - Register a new player\n' +
+                   '`/link-player <user> <name>` - Link in-game name to Discord user\n' +
+                   '`/unlink-player <name>` - Remove player name mapping', 
+            inline: true 
+        },
         
         // Stats Management
-        { name: '📈 *Stats Management*', value: '\u200B', inline: false },
-        { name: '/addstats <user> [stats...]', value: 'Add stats for a player', inline: true },
-        { name: '/removestats <user> [stats...]', value: 'Remove stats from a player', inline: true },
-        { name: '/import-game-stats <file>', value: 'Import Rocket League stats from CSV', inline: true },
+        { 
+            name: '📈 **Stats Management**', 
+            value: '`/addstats <user> [stats...]` - Add stats for a player\n' +
+                   '`/removestats <user> [stats...]` - Remove stats from a player\n' +
+                   '`/import-game-stats <file>` - Import Rocket League stats from CSV\n' +
+                   '`/export-csv [team]` - Export player stats to CSV', 
+            inline: true 
+        },
         
         // Team Record Management
-        { name: '🏅 *Team Record Management*', value: '\u200B', inline: false },
-        { name: '/team-win <team> [wins]', value: 'Add win(s) to a team record', inline: true },
-        { name: '/team-loss <team> [losses]', value: 'Add loss(es) to a team record', inline: true },
-        { name: '/team-remove-win <team> [wins]', value: 'Remove win(s) from a team record', inline: true },
-        { name: '/team-remove-loss <team> [losses]', value: 'Remove loss(es) from a team record', inline: true },
-        { name: '/export-csv [team]', value: 'Export player stats to CSV file', inline: true },
-        { name: '\u200B', value: '\u200B', inline: true }, // Empty field for spacing
+        { 
+            name: '🏅 **Team Records**', 
+            value: '`/team-win <team> [wins]` - Add win(s) to team\n' +
+                   '`/team-loss <team> [losses]` - Add loss(es) to team\n' +
+                   '`/team-remove-win <team> [wins]` - Remove win(s)\n' +
+                   '`/team-remove-loss <team> [losses]` - Remove loss(es)', 
+            inline: false 
+        },
         
-        // Dangerous Commands Section
-        { name: '⚠️ **DANGER ZONE - Data Reset Commands**', value: 'Use with extreme caution!', inline: false },
-        { name: '/wipe-players', value: '🔥 Wipe all player stats', inline: true },
-        { name: '/wipe-teams', value: '🔥 Reset all team records', inline: true },
-        { name: '/wipe-imports', value: '🔄 Clear import history', inline: true },
-        { name: '/wipe-all', value: '💀 **COMPLETE RESET** - Wipes everything!', inline: true }
+        // Dangerous Commands
+        { 
+            name: '⚠️ **DANGER ZONE - Data Reset Commands**', 
+            value: '**Use with extreme caution!**\n' +
+                   '`/wipe-players` - 🔥 Wipe all player stats\n' +
+                   '`/wipe-teams` - 🔥 Reset all team records\n' +
+                   '`/wipe-imports` - 🔄 Clear import history\n' +
+                   '`/wipe-all` - 💀 **COMPLETE RESET** - Wipes everything!', 
+            inline: false 
+        }
     );
     
     await interaction.reply({ embeds: [embed] });
