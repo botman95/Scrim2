@@ -308,7 +308,49 @@ const db = {
         // Write updated players back to file
         await db.writePlayersFile(players);
         return players[playerIndex];
+    },
+    // Read imported games file
+readImportedGamesFile: async () => {
+    try {
+        const importedGamesPath = path.join(__dirname, 'imported-games.json');
+        await fs.access(importedGamesPath).catch(async () => {
+            await fs.writeFile(importedGamesPath, JSON.stringify([]));
+        });
+
+        const data = await fs.readFile(importedGamesPath, 'utf8');
+        return JSON.parse(data);
+    } catch (error) {
+        console.error('Error reading imported games file:', error);
+        return [];
     }
+},
+
+// Write imported games file
+writeImportedGamesFile: async (games) => {
+    try {
+        const importedGamesPath = path.join(__dirname, 'imported-games.json');
+        await fs.writeFile(importedGamesPath, JSON.stringify(games, null, 2));
+    } catch (error) {
+        console.error('Error writing imported games file:', error);
+    }
+},
+
+// Check if a game was already imported
+isGameAlreadyImported: async (timestamp, playerId) => {
+    const importedGames = await db.readImportedGamesFile();
+    const gameKey = `${timestamp}_${playerId}`;
+    return importedGames.includes(gameKey);
+},
+
+// Mark a game as imported
+markGameAsImported: async (timestamp, playerId) => {
+    const importedGames = await db.readImportedGamesFile();
+    const gameKey = `${timestamp}_${playerId}`;
+    if (!importedGames.includes(gameKey)) {
+        importedGames.push(gameKey);
+        await db.writeImportedGamesFile(importedGames);
+    }
+}
 };
 
 // CSV parsing utility functions
@@ -420,11 +462,25 @@ const csvUtils = {
     },
 
     // Process game data and aggregate by player
-    aggregatePlayerStats: (gameData) => {
+    aggregatePlayerStats: async (gameData) => {
         const playerStats = {};
+        const newGamesCount = { total: 0, duplicates: 0 };
         
-        gameData.forEach(row => {
+        for (const row of gameData) {
             const playerKey = row.playerName.toLowerCase();
+            
+            // Check if this specific game was already imported
+            const isAlreadyImported = await db.isGameAlreadyImported(row.timestamp, row.playerId);
+            
+            if (isAlreadyImported) {
+                console.log(`Skipping duplicate game: ${row.playerName} at ${row.timestamp}`);
+                newGamesCount.duplicates++;
+                continue;
+            }
+            
+            // Mark this game as imported
+            await db.markGameAsImported(row.timestamp, row.playerId);
+            newGamesCount.total++;
             
             if (!playerStats[playerKey]) {
                 playerStats[playerKey] = {
@@ -444,10 +500,8 @@ const csvUtils = {
             
             const player = playerStats[playerKey];
             
-            // Increment game count
+            // Add stats from this NEW game
             player.totalGames++;
-            
-            // Add stats
             player.totalGoals += row.goals;
             player.totalAssists += row.assists;
             player.totalSaves += row.saves;
@@ -465,9 +519,12 @@ const csvUtils = {
             if (row.timestamp && (!player.lastSeen || row.timestamp > player.lastSeen)) {
                 player.lastSeen = row.timestamp;
             }
-        });
+        }
         
-        return Object.values(playerStats);
+        // Add metadata about import
+        const result = Object.values(playerStats);
+        result.importSummary = newGamesCount;
+        return result;
     },
 
     // Map player names to Discord users using the mapping system
@@ -1237,7 +1294,8 @@ client.on('interactionCreate', async interaction => {
                 }
 
                 // Aggregate player stats from individual game records
-                const aggregatedStats = csvUtils.aggregatePlayerStats(csvData);
+                const aggregatedStats = await csvUtils.aggregatePlayerStats(csvData);
+                const importSummary = aggregatedStats.importSummary;
 
                 // Try to map players to Discord users
                 const { mappedPlayers, unmappedPlayers } = await csvUtils.mapPlayersToDiscord(aggregatedStats, interaction);
@@ -1325,11 +1383,12 @@ client.on('interactionCreate', async interaction => {
 
                 // Create success embed
                 const embed = createEmbed('Rocket League Stats Import Complete', null, config.colors.success);
-                
+
                 let description = `🚀 **Import Summary:**\n`;
-                description += `✅ Players imported/updated: ${imported + updated}\n`;
-                description += `📊 Total games processed: ${csvData.length}\n`;
-                description += `🎮 Unique players found: ${aggregatedStats.length}\n`;
+                description += `✅ New games imported: ${importSummary.total}\n`;
+                description += `🔄 Duplicate games skipped: ${importSummary.duplicates}\n`;
+                description += `📊 Total game rows processed: ${csvData.length}\n`;
+                description += `🎮 Unique players found: ${aggregatedStats.length - 1}\n`; // -1 because importSummary is included
                 description += `🔗 Discord users matched: ${mappedPlayers.length}\n`;
                 
                 if (unmappedPlayers.length > 0) {
