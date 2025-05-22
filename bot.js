@@ -324,11 +324,13 @@ const csvUtils = {
             readable.push(null);
             
             readable
-                .pipe(csv())
+                .pipe(csv({ 
+                    // Add trim option to handle spaces in headers
+                    trim: true,
+                    // Map headers to handle spaces
+                    mapHeaders: ({ header }) => header.trim()
+                }))
                 .on('data', (row) => {
-                    // Expected CSV columns from your format:
-                    // TEAM COLOR, NAME, GOALS, ASSISTS, SAVES, SHOTS, DEMOS, SCORE, MMR, TEAM GOALS, W/L, TIMESTAMP, PLAYERID
-                    
                     // Clean and validate the row data
                     const cleanRow = {
                         playerName: row.NAME?.trim(),
