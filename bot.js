@@ -824,6 +824,22 @@ const commands = [
         .addIntegerOption(option => createIntegerOption(option, 'shots', 'Number of shots to remove', false))
         .addIntegerOption(option => createIntegerOption(option, 'demos', 'Number of demos to remove', false))
         .addIntegerOption(option => createIntegerOption(option, 'mvps', 'Number of MVPs to remove', false)),
+        
+    new SlashCommandBuilder()
+    .setName('wipe-players')
+    .setDescription('DANGER: Wipe all player stats (Admin only)'),
+
+new SlashCommandBuilder()
+    .setName('wipe-teams')
+    .setDescription('DANGER: Reset all team records (Admin only)'),
+
+new SlashCommandBuilder()
+    .setName('wipe-imports')
+    .setDescription('Reset import history (allows re-importing same games)'),
+
+new SlashCommandBuilder()
+    .setName('wipe-all')
+    .setDescription('DANGER: Wipe ALL data - complete reset (Admin only)'),
 
         new SlashCommandBuilder()
         .setName('team-win')
@@ -1099,36 +1115,64 @@ client.on('interactionCreate', async interaction => {
     try {
         const commandName = interaction.commandName;
         
-        // Help command (updated to include new commands)
-        if (commandName === 'help') {
-            const embed = createEmbed('Stats Bot Help', 'List of available commands:');
-            
-            embed.addFields(
-                { name: '/help', value: 'Shows this help message', inline: false },
-                { name: '/stats [user]', value: 'Shows stats for a user (or yourself if no user is specified)', inline: false },
-                { name: '/team <team>', value: 'Shows player leaderboard for a specific team', inline: false },
-                { name: '/team-stats <team>', value: 'Shows win/loss record for a specific team', inline: false },
-                { name: '/leaderboard', value: 'Shows the overall leaderboard across both teams', inline: false },
-                { name: '/achievements', value: 'Shows all available achievements and how to unlock them', inline: false },
-                { name: '/show-links', value: 'Shows all current player name mappings', inline: false },
-                { name: '/rl-csv-template', value: 'Get a Rocket League CSV template file', inline: false },
-                { name: '**Admin Commands**', value: 'The following commands require the Scrimster role:', inline: false },
-                { name: '/register <user> <team>', value: 'Register a new player to a team', inline: false },
-                { name: '/link-player <user> <name>', value: 'Link an in-game name to a Discord user', inline: false },
-                { name: '/unlink-player <name>', value: 'Remove player name mapping', inline: false },
-                { name: '/import-game-stats <file>', value: 'Import Rocket League stats from CSV', inline: false },
-                { name: '/addstats <user> [stats...]', value: 'Add stats for a player', inline: false },
-                { name: '/removestats <user> [stats...]', value: 'Remove stats from a player', inline: false },
-                { name: '/team-win <team> [wins]', value: 'Add win(s) to a team record', inline: false },
-                { name: '/team-loss <team> [losses]', value: 'Add loss(es) to a team record', inline: false },
-                { name: '/team-remove-win <team> [wins]', value: 'Remove win(s) from a team record', inline: false },
-                { name: '/team-remove-loss <team> [losses]', value: 'Remove loss(es) from a team record', inline: false },
-                { name: '/export-csv [team]', value: 'Export player stats to CSV file', inline: false }
-            );
-            
-            await interaction.reply({ embeds: [embed] });
-            return;
-        }
+// Help command (updated to include new commands)
+if (commandName === 'help') {
+    const embed = createEmbed('Stats Bot Help', 'List of available commands:');
+    
+    embed.addFields(
+        // Basic Commands Section
+        { name: '📊 **Basic Commands**', value: '\u200B', inline: false },
+        { name: '/help', value: 'Shows this help message', inline: true },
+        { name: '/stats [user]', value: 'Shows stats for a user (or yourself if no user specified)', inline: true },
+        { name: '/leaderboard', value: 'Shows the overall leaderboard across both teams', inline: true },
+        
+        // Team Commands Section  
+        { name: '🏆 **Team Commands**', value: '\u200B', inline: false },
+        { name: '/team <team>', value: 'Shows player leaderboard for a specific team', inline: true },
+        { name: '/team-stats <team>', value: 'Shows win/loss record for a specific team', inline: true },
+        { name: '/achievements', value: 'Shows all available achievements and how to unlock them', inline: true },
+        
+        // Utility Commands Section
+        { name: '🔧 **Utility Commands**', value: '\u200B', inline: false },
+        { name: '/show-links', value: 'Shows all current player name mappings', inline: true },
+        { name: '/rl-csv-template', value: 'Get a Rocket League CSV template file', inline: true },
+        { name: '\u200B', value: '\u200B', inline: true }, // Empty field for spacing
+        
+        // Admin Commands Section
+        { name: '⚙️ **Admin Commands**', value: 'The following commands require the Scrimster role:', inline: false },
+        
+        // Player Management
+        { name: '👥 *Player Management*', value: '\u200B', inline: false },
+        { name: '/register <user> <team>', value: 'Register a new player to a team', inline: true },
+        { name: '/link-player <user> <name>', value: 'Link an in-game name to a Discord user', inline: true },
+        { name: '/unlink-player <name>', value: 'Remove player name mapping', inline: true },
+        
+        // Stats Management
+        { name: '📈 *Stats Management*', value: '\u200B', inline: false },
+        { name: '/addstats <user> [stats...]', value: 'Add stats for a player', inline: true },
+        { name: '/removestats <user> [stats...]', value: 'Remove stats from a player', inline: true },
+        { name: '/import-game-stats <file>', value: 'Import Rocket League stats from CSV', inline: true },
+        
+        // Team Record Management
+        { name: '🏅 *Team Record Management*', value: '\u200B', inline: false },
+        { name: '/team-win <team> [wins]', value: 'Add win(s) to a team record', inline: true },
+        { name: '/team-loss <team> [losses]', value: 'Add loss(es) to a team record', inline: true },
+        { name: '/team-remove-win <team> [wins]', value: 'Remove win(s) from a team record', inline: true },
+        { name: '/team-remove-loss <team> [losses]', value: 'Remove loss(es) from a team record', inline: true },
+        { name: '/export-csv [team]', value: 'Export player stats to CSV file', inline: true },
+        { name: '\u200B', value: '\u200B', inline: true }, // Empty field for spacing
+        
+        // Dangerous Commands Section
+        { name: '⚠️ **DANGER ZONE - Data Reset Commands**', value: 'Use with extreme caution!', inline: false },
+        { name: '/wipe-players', value: '🔥 Wipe all player stats', inline: true },
+        { name: '/wipe-teams', value: '🔥 Reset all team records', inline: true },
+        { name: '/wipe-imports', value: '🔄 Clear import history', inline: true },
+        { name: '/wipe-all', value: '💀 **COMPLETE RESET** - Wipes everything!', inline: true }
+    );
+    
+    await interaction.reply({ embeds: [embed] });
+    return;
+}
 
         // Link player command (Admin only)
         if (commandName === 'link-player') {
@@ -2051,6 +2095,101 @@ client.on('interactionCreate', async interaction => {
                 });
             }
             
+            return;
+        }
+
+        // *** ADD THE WIPE COMMANDS HERE ***
+        
+        // Wipe player stats
+        if (commandName === 'wipe-players') {
+            if (!(await isAdmin(interaction.member))) {
+                await interaction.reply({ 
+                    content: `You need the "${config.adminRoleName}" role to use this command.`,
+                    ephemeral: true 
+                });
+                return;
+            }
+            
+            await db.writePlayersFile([]);
+            
+            const embed = createEmbed('Player Data Wiped', 
+                '⚠️ All player stats have been reset to zero!', 
+                config.colors.error);
+            
+            await interaction.reply({ embeds: [embed] });
+            return;
+        }
+
+        // Wipe team records
+        if (commandName === 'wipe-teams') {
+            if (!(await isAdmin(interaction.member))) {
+                await interaction.reply({ 
+                    content: `You need the "${config.adminRoleName}" role to use this command.`,
+                    ephemeral: true 
+                });
+                return;
+            }
+            
+            const defaultTeamStats = {
+                'A-Team': { wins: 0, losses: 0 },
+                'B-Team': { wins: 0, losses: 0 }
+            };
+            await db.writeTeamStatsFile(defaultTeamStats);
+            
+            const embed = createEmbed('Team Records Wiped', 
+                '⚠️ All team win/loss records have been reset!', 
+                config.colors.error);
+            
+            await interaction.reply({ embeds: [embed] });
+            return;
+        }
+
+        // Wipe import history
+        if (commandName === 'wipe-imports') {
+            if (!(await isAdmin(interaction.member))) {
+                await interaction.reply({ 
+                    content: `You need the "${config.adminRoleName}" role to use this command.`,
+                    ephemeral: true 
+                });
+                return;
+            }
+            
+            await db.writeImportedGamesFile([]);
+            
+            const embed = createEmbed('Import History Wiped', 
+                '🔄 Import history cleared - you can now re-import any CSV files!', 
+                config.colors.success);
+            
+            await interaction.reply({ embeds: [embed] });
+            return;
+        }
+
+        // Wipe everything
+        if (commandName === 'wipe-all') {
+            if (!(await isAdmin(interaction.member))) {
+                await interaction.reply({ 
+                    content: `You need the "${config.adminRoleName}" role to use this command.`,
+                    ephemeral: true 
+                });
+                return;
+            }
+            
+            // Reset all data files
+            await db.writePlayersFile([]);
+            await db.writeNameMappingFile({});
+            await db.writeImportedGamesFile([]);
+            
+            const defaultTeamStats = {
+                'A-Team': { wins: 0, losses: 0 },
+                'B-Team': { wins: 0, losses: 0 }
+            };
+            await db.writeTeamStatsFile(defaultTeamStats);
+            
+            const embed = createEmbed('ALL DATA WIPED', 
+                '🔥 Complete reset: All players, teams, mappings, and import history cleared!', 
+                config.colors.error);
+            
+            await interaction.reply({ embeds: [embed] });
             return;
         }
         
