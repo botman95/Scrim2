@@ -110,6 +110,25 @@ const db = {
         return teamStats[teamName] || { wins: 0, losses: 0 };
     },
 
+    // Update team stats (add wins/losses)
+    updateTeamStats: async (teamName, wins = 0, losses = 0) => {
+        const teamStats = await db.readTeamStatsFile();
+        
+        if (!teamStats[teamName]) {
+            teamStats[teamName] = { wins: 0, losses: 0 };
+        }
+        
+        teamStats[teamName].wins += wins;
+        teamStats[teamName].losses += losses;
+        
+        // Ensure no negative values
+        teamStats[teamName].wins = Math.max(0, teamStats[teamName].wins);
+        teamStats[teamName].losses = Math.max(0, teamStats[teamName].losses);
+        
+        await db.writeTeamStatsFile(teamStats);
+        return teamStats[teamName];
+    },
+
     // Remove team stats (supports negative values for removal)
     removeTeamStats: async (teamName, wins = 0, losses = 0) => {
         const teamStats = await db.readTeamStatsFile();
