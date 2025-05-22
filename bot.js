@@ -325,9 +325,8 @@ const csvUtils = {
             
             readable
                 .pipe(csv({ 
-                    // Add trim option to handle spaces in headers
+                    headers: true,  // ← ADD THIS: Treat first row as headers
                     trim: true,
-                    // Map headers to handle spaces
                     mapHeaders: ({ header }) => header.trim()
                 }))
                 .on('data', (row) => {
