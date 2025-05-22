@@ -325,11 +325,20 @@ const csvUtils = {
             
             readable
                 .pipe(csv({ 
-                    headers: true,  // ← ADD THIS: Treat first row as headers
+                    headers: true,
                     trim: true,
                     mapHeaders: ({ header }) => header.trim()
                 }))
                 .on('data', (row) => {
+                    // Skip duplicate header rows that appear in the middle of data
+                    if (row['TEAM COLOR'] === 'TEAM COLOR' || 
+                        row.NAME === 'NAME' || 
+                        row.GOALS === 'GOALS' ||
+                        row['W/L'] === 'W/L') {
+                        console.log('Skipping duplicate header row');
+                        return; // Skip this row
+                    }
+                    
                     // Clean and validate the row data
                     const cleanRow = {
                         playerName: row.NAME?.trim(),
@@ -344,12 +353,18 @@ const csvUtils = {
                         playerId: row.PLAYERID?.trim()
                     };
                     
-                    // Validate required fields
-                    if (cleanRow.playerName && cleanRow.teamColor && cleanRow.winLoss) {
+                    // Validate required fields (skip empty rows too)
+                    if (cleanRow.playerName && 
+                        cleanRow.teamColor && 
+                        cleanRow.winLoss &&
+                        cleanRow.playerName !== '' &&
+                        cleanRow.teamColor !== '' &&
+                        cleanRow.winLoss !== '') {
                         results.push(cleanRow);
                     }
                 })
                 .on('end', () => {
+                    console.log(`Parsed ${results.length} valid player rows`);
                     resolve(results);
                 })
                 .on('error', (error) => {
