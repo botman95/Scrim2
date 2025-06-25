@@ -1,5 +1,5 @@
 // Discord Stats Bot for tracking team statistics
-const { Client, GatewayIntentBits, Partials, EmbedBuilder, PermissionFlagsBits, REST, Routes, SlashCommandBuilder, MessageFlags } = require('discord.js');
+const { Client, GatewayIntentBits, Partials, EmbedBuilder, PermissionFlagsBits, REST, Routes, SlashCommandBuilder, MessageFlags, AttachmentBuilder } = require('discord.js');
 const fs = require('fs').promises;
 const path = require('path');
 const http = require('http');
@@ -29,7 +29,8 @@ const config = {
     dataFilePath: path.join(__dirname, 'players.json'),
     teamStatsFilePath: path.join(__dirname, 'team-stats.json'),
     gameHistoryFilePath: path.join(__dirname, 'game-history.json'),
-    scheduledMatchesFilePath: path.join(__dirname, 'scheduled-matches.json')
+    scheduledMatchesFilePath: path.join(__dirname, 'scheduled-matches.json'),
+    backupsFolder: path.join(__dirname, 'backups')
 };
 
 // Initialize Discord client
@@ -369,6 +370,203 @@ const db = {
         const activeMatches = matches.filter(match => new Date(match.dateTime) > dayAgo);
         await db.writeScheduledMatchesFile(activeMatches);
         return activeMatches.length;
+    },
+
+    // Find matches by criteria
+    findMatches: async (teams = null, dateStr = null) => {
+        const matches = await db.readScheduledMatchesFile();
+        const now = new Date();
+        
+        // Filter out past matches
+        let filteredMatches = matches.filter(match => new Date(match.dateTime) > now);
+        
+        // Filter by teams if provided
+        if (teams) {
+            const teamsLower = teams.toLowerCase();
+            filteredMatches = filteredMatches.filter(match => {
+                const matchStr = `${match.team1} vs ${match.team2}`.toLowerCase();
+                return matchStr.includes(teamsLower) || 
+                       match.team1.toLowerCase().includes(teamsLower) || 
+                       match.team2.toLowerCase().includes(teamsLower);
+            });
+        }
+        
+        // Filter by date if provided
+        if (dateStr) {
+            const targetDate = new Date(dateStr);
+            if (!isNaN(targetDate.getTime())) {
+                filteredMatches = filteredMatches.filter(match => {
+                    const matchDate = new Date(match.dateTime);
+                    return matchDate.toDateString() === targetDate.toDateString();
+                });
+            }
+        }
+        
+        return filteredMatches.sort((a, b) => new Date(a.dateTime) - new Date(b.dateTime));
+    },
+
+    // Cancel a specific match by ID
+    cancelMatch: async (matchId) => {
+        const matches = await db.readScheduledMatchesFile();
+        const matchIndex = matches.findIndex(match => match.id === matchId);
+        
+        if (matchIndex === -1) {
+            throw new Error('Match not found');
+        }
+        
+        const cancelledMatch = matches[matchIndex];
+        matches.splice(matchIndex, 1);
+        await db.writeScheduledMatchesFile(matches);
+        return cancelledMatch;
+    },
+
+    // Backup System Functions
+    createBackup: async (backupType = 'manual') => {
+        try {
+            // Ensure backups folder exists
+            await fs.mkdir(config.backupsFolder, { recursive: true });
+            
+            // Create timestamp for backup
+            const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+            const backupFolder = path.join(config.backupsFolder, `backup-${timestamp}-${backupType}`);
+            
+            await fs.mkdir(backupFolder, { recursive: true });
+            
+            // Backup all data files
+            const filesToBackup = [
+                { src: config.dataFilePath, name: 'players.json' },
+                { src: config.teamStatsFilePath, name: 'team-stats.json' },
+                { src: config.gameHistoryFilePath, name: 'game-history.json' },
+                { src: config.scheduledMatchesFilePath, name: 'scheduled-matches.json' }
+            ];
+            
+            let filesBackedUp = 0;
+            for (const file of filesToBackup) {
+                try {
+                    await fs.access(file.src);
+                    const destPath = path.join(backupFolder, file.name);
+                    await fs.copyFile(file.src, destPath);
+                    filesBackedUp++;
+                } catch (error) {
+                    console.log(`File ${file.name} not found, skipping...`);
+                }
+            }
+            
+            // Create backup manifest
+            const manifest = {
+                timestamp: new Date().toISOString(),
+                type: backupType,
+                filesBackedUp,
+                version: '1.0'
+            };
+            
+            await fs.writeFile(
+                path.join(backupFolder, 'backup-manifest.json'), 
+                JSON.stringify(manifest, null, 2)
+            );
+            
+            console.log(`✅ Backup created: ${backupFolder}`);
+            return { folder: backupFolder, manifest };
+            
+        } catch (error) {
+            console.error('❌ Error creating backup:', error);
+            throw new Error(`Backup failed: ${error.message}`);
+        }
+    },
+
+    listBackups: async () => {
+        try {
+            await fs.mkdir(config.backupsFolder, { recursive: true });
+            const backupDirs = await fs.readdir(config.backupsFolder);
+            
+            const backups = [];
+            for (const dir of backupDirs) {
+                if (dir.startsWith('backup-')) {
+                    const manifestPath = path.join(config.backupsFolder, dir, 'backup-manifest.json');
+                    try {
+                        const manifestData = await fs.readFile(manifestPath, 'utf8');
+                        const manifest = JSON.parse(manifestData);
+                        backups.push({
+                            folder: dir,
+                            ...manifest
+                        });
+                    } catch (error) {
+                        // Skip backups without valid manifest
+                        console.warn(`Invalid backup folder: ${dir}`);
+                    }
+                }
+            }
+            
+            return backups.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+            
+        } catch (error) {
+            console.error('Error listing backups:', error);
+            return [];
+        }
+    },
+
+    restoreFromBackup: async (backupFolder) => {
+        try {
+            const backupPath = path.join(config.backupsFolder, backupFolder);
+            
+            // Check if backup exists
+            await fs.access(backupPath);
+            
+            // Restore each file
+            const filesToRestore = [
+                { name: 'players.json', dest: config.dataFilePath },
+                { name: 'team-stats.json', dest: config.teamStatsFilePath },
+                { name: 'game-history.json', dest: config.gameHistoryFilePath },
+                { name: 'scheduled-matches.json', dest: config.scheduledMatchesFilePath }
+            ];
+            
+            let filesRestored = 0;
+            for (const file of filesToRestore) {
+                const srcPath = path.join(backupPath, file.name);
+                try {
+                    await fs.access(srcPath);
+                    await fs.copyFile(srcPath, file.dest);
+                    filesRestored++;
+                } catch (error) {
+                    console.log(`Backup file ${file.name} not found, skipping...`);
+                }
+            }
+            
+            console.log(`✅ Restored ${filesRestored} files from backup: ${backupFolder}`);
+            return filesRestored;
+            
+        } catch (error) {
+            console.error('❌ Error restoring backup:', error);
+            throw new Error(`Restore failed: ${error.message}`);
+        }
+    },
+
+    cleanupOldBackups: async (keepDays = 30) => {
+        try {
+            const backups = await db.listBackups();
+            const cutoffDate = new Date();
+            cutoffDate.setDate(cutoffDate.getDate() - keepDays);
+            
+            let deletedCount = 0;
+            for (const backup of backups) {
+                const backupDate = new Date(backup.timestamp);
+                if (backupDate < cutoffDate) {
+                    const backupPath = path.join(config.backupsFolder, backup.folder);
+                    await fs.rmdir(backupPath, { recursive: true });
+                    deletedCount++;
+                }
+            }
+            
+            if (deletedCount > 0) {
+                console.log(`🧹 Cleaned up ${deletedCount} old backups`);
+            }
+            
+            return deletedCount;
+            
+        } catch (error) {
+            console.error('Error cleaning up backups:', error);
+            return 0;
+        }
     }
 };
 
@@ -631,7 +829,80 @@ const commands = [
 
     new SlashCommandBuilder()
         .setName('match-calendar')
-        .setDescription('View upcoming scheduled matches')
+        .setDescription('View upcoming scheduled matches'),
+
+    new SlashCommandBuilder()
+        .setName('cancel-match')
+        .setDescription('Cancel a scheduled match (Admin only)')
+        .addStringOption(option =>
+            option.setName('match-id')
+                .setDescription('Specific match ID to cancel (use /cancel-match to see IDs)')
+                .setRequired(false))
+        .addStringOption(option =>
+            option.setName('teams')
+                .setDescription('Filter by teams (e.g., "A-Team vs B-Team" or just "A-Team")')
+                .setRequired(false))
+        .addStringOption(option =>
+            option.setName('date')
+                .setDescription('Filter by match date (e.g., "June 30" or "2025-06-30")')
+                .setRequired(false)),
+
+    new SlashCommandBuilder()
+        .setName('create-backup')
+        .setDescription('Create a manual backup of all bot data (Admin only)'),
+
+    new SlashCommandBuilder()
+        .setName('list-backups')
+        .setDescription('List available backups (Admin only)'),
+
+    new SlashCommandBuilder()
+        .setName('restore-backup')
+        .setDescription('Restore data from a backup (Admin only)')
+        .addStringOption(option =>
+            option.setName('backup-folder')
+                .setDescription('Backup folder name (use /list-backups to see available backups)')
+                .setRequired(true)),
+
+    new SlashCommandBuilder()
+        .setName('export-data')
+        .setDescription('Export all current data as downloadable files (Admin only)'),
+
+    new SlashCommandBuilder()
+        .setName('generate-report')
+        .setDescription('Generate a comprehensive stats report file')
+        .addStringOption(option =>
+            option.setName('format')
+                .setDescription('Report format')
+                .setRequired(false)
+                .addChoices(
+                    { name: 'Text File (.txt)', value: 'txt' },
+                    { name: 'CSV Spreadsheet (.csv)', value: 'csv' },
+                    { name: 'HTML Web Page (.html)', value: 'html' }
+                ))
+        .addStringOption(option =>
+            option.setName('team')
+                .setDescription('Generate report for specific team only')
+                .setRequired(false)
+                .addChoices(
+                    { name: 'A-Team', value: 'A-Team' },
+                    { name: 'B-Team', value: 'B-Team' }
+                )),
+
+    new SlashCommandBuilder()
+        .setName('player-report')
+        .setDescription('Generate individual player report')
+        .addUserOption(option =>
+            option.setName('user')
+                .setDescription('Player to generate report for (defaults to yourself)')
+                .setRequired(false))
+        .addStringOption(option =>
+            option.setName('format')
+                .setDescription('Report format')
+                .setRequired(false)
+                .addChoices(
+                    { name: 'Text File (.txt)', value: 'txt' },
+                    { name: 'HTML Web Page (.html)', value: 'html' }
+                ))
 ];
 
 // Add error handling utility function
@@ -772,6 +1043,72 @@ client.once('ready', () => {
             console.error('Error in match reminder system:', error);
         }
     }, 60 * 60 * 1000); // Every hour
+
+    // Automatic backup system (daily at 3 AM)
+    const scheduleBackups = () => {
+        const now = new Date();
+        const next3AM = new Date();
+        next3AM.setHours(3, 0, 0, 0);
+        
+        // If it's already past 3 AM today, schedule for tomorrow
+        if (now >= next3AM) {
+            next3AM.setDate(next3AM.getDate() + 1);
+        }
+        
+        const timeUntilBackup = next3AM.getTime() - now.getTime();
+        
+        setTimeout(async () => {
+            try {
+                console.log('🔄 Creating automatic daily backup...');
+                await db.createBackup('automatic');
+                await db.cleanupOldBackups(30); // Keep 30 days of backups
+                console.log('✅ Automatic backup completed');
+            } catch (error) {
+                console.error('❌ Error in automatic backup:', error);
+            }
+            
+            // Schedule next backup in 24 hours
+            setInterval(async () => {
+                try {
+                    console.log('🔄 Creating automatic daily backup...');
+                    await db.createBackup('automatic');
+                    await db.cleanupOldBackups(30);
+                    console.log('✅ Automatic backup completed');
+                } catch (error) {
+                    console.error('❌ Error in automatic backup:', error);
+                }
+            }, 24 * 60 * 60 * 1000); // Every 24 hours
+            
+        }, timeUntilBackup);
+        
+        console.log(`📅 Next automatic backup scheduled for: ${next3AM.toLocaleString()}`);
+    };
+    
+    // Start backup scheduling
+    scheduleBackups();
+
+    // Create initial backup on startup (if no recent backup exists)
+    setTimeout(async () => {
+        try {
+            const backups = await db.listBackups();
+            const now = new Date();
+            const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+            
+            const recentBackup = backups.find(backup => 
+                new Date(backup.timestamp) > oneDayAgo
+            );
+            
+            if (!recentBackup) {
+                console.log('🔄 No recent backup found, creating startup backup...');
+                await db.createBackup('startup');
+                console.log('✅ Startup backup created');
+            } else {
+                console.log('✅ Recent backup exists, skipping startup backup');
+            }
+        } catch (error) {
+            console.error('❌ Error checking for recent backup:', error);
+        }
+    }, 30000); // 30 seconds after startup
 });
 
 // Check if user has admin role
@@ -1077,6 +1414,7 @@ function createMatchCalendarEmbed(upcomingMatches) {
         
         matchList += `**${index + 1}.** ${match.team1} vs ${match.team2}\n`;
         matchList += `📅 ${dateStr} at ${timeStr}\n`;
+        matchList += `🔢 ID: \`${match.id}\`\n`;
         if (match.description) {
             matchList += `📝 ${match.description}\n`;
         }
@@ -1084,7 +1422,635 @@ function createMatchCalendarEmbed(upcomingMatches) {
     });
     
     embed.setDescription(matchList);
+    embed.addFields({
+        name: '🛠️ Management',
+        value: 'Use `/cancel-match match-id:<id>` to cancel a specific match.',
+        inline: false
+    });
+    
     return embed;
+}
+
+// Create cancel match selection embed
+function createCancelMatchEmbed(matchesToCancel) {
+    const embed = createEmbed('❌ Cancel Match', 'Select a match to cancel');
+    
+    if (matchesToCancel.length === 0) {
+        embed.setDescription('No matches found matching your criteria.');
+        return embed;
+    }
+    
+    let matchList = '';
+    matchesToCancel.forEach((match, index) => {
+        const date = new Date(match.dateTime);
+        const dateStr = date.toLocaleDateString();
+        const timeStr = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        
+        matchList += `**${index + 1}.** ${match.team1} vs ${match.team2}\n`;
+        matchList += `📅 ${dateStr} at ${timeStr}\n`;
+        matchList += `🔢 Match ID: \`${match.id}\`\n`;
+        if (match.description) {
+            matchList += `📝 ${match.description}\n`;
+        }
+        matchList += '\n';
+    });
+    
+    embed.setDescription(matchList);
+    embed.addFields({
+        name: '🗑️ How to Cancel',
+        value: 'Copy the Match ID of the match you want to cancel and use it with `/cancel-match` again, or contact an admin.',
+        inline: false
+    });
+    
+    return embed;
+}
+
+// Report Generation Functions
+async function generateTextReport(teamFilter = null) {
+    const players = await db.getAllPlayers(teamFilter);
+    const aTeamStats = await db.getTeamStats('A-Team');
+    const bTeamStats = await db.getTeamStats('B-Team');
+    const upcomingMatches = await db.getUpcomingMatches(5);
+    
+    const reportDate = new Date().toLocaleString();
+    
+    let report = '';
+    report += '='.repeat(60) + '\n';
+    report += '           DISCORD STATS BOT - TEAM REPORT\n';
+    report += '='.repeat(60) + '\n';
+    report += `Generated: ${reportDate}\n`;
+    report += teamFilter ? `Team Filter: ${teamFilter}\n` : 'Scope: All Teams\n';
+    report += '='.repeat(60) + '\n\n';
+    
+    // Team Records Section
+    if (!teamFilter) {
+        report += '📊 TEAM STANDINGS\n';
+        report += '-'.repeat(30) + '\n';
+        
+        const aWinRate = aTeamStats.wins + aTeamStats.losses > 0 ? 
+            ((aTeamStats.wins / (aTeamStats.wins + aTeamStats.losses)) * 100).toFixed(1) : '0.0';
+        const bWinRate = bTeamStats.wins + bTeamStats.losses > 0 ? 
+            ((bTeamStats.wins / (bTeamStats.wins + bTeamStats.losses)) * 100).toFixed(1) : '0.0';
+        
+        report += `A-Team: ${aTeamStats.wins}W-${aTeamStats.losses}L (${aWinRate}% win rate)\n`;
+        report += `B-Team: ${bTeamStats.wins}W-${bTeamStats.losses}L (${bWinRate}% win rate)\n\n`;
+    }
+    
+    // Player Statistics
+    report += `👥 PLAYER STATISTICS${teamFilter ? ` - ${teamFilter}` : ''}\n`;
+    report += '-'.repeat(50) + '\n';
+    
+    if (players.length === 0) {
+        report += 'No players found.\n\n';
+    } else {
+        // Sort by goals for main table
+        players.sort((a, b) => b.goals - a.goals);
+        
+        report += `${'Name'.padEnd(20)} ${'Team'.padEnd(8)} ${'Games'.padEnd(6)} ${'Goals'.padEnd(6)} ${'Assists'.padEnd(7)} ${'Saves'.padEnd(6)} ${'Shots'.padEnd(6)} ${'MVPs'.padEnd(5)}\n`;
+        report += '-'.repeat(85) + '\n';
+        
+        players.forEach(player => {
+            report += `${player.displayName.substring(0, 19).padEnd(20)} `;
+            report += `${player.team.padEnd(8)} `;
+            report += `${player.gamesPlayed.toString().padEnd(6)} `;
+            report += `${player.goals.toString().padEnd(6)} `;
+            report += `${player.assists.toString().padEnd(7)} `;
+            report += `${player.saves.toString().padEnd(6)} `;
+            report += `${(player.shots || 0).toString().padEnd(6)} `;
+            report += `${player.mvps.toString().padEnd(5)}\n`;
+        });
+        report += '\n';
+        
+        // Top Performers
+        report += '🏆 TOP PERFORMERS\n';
+        report += '-'.repeat(20) + '\n';
+        
+        const topScorer = players[0];
+        const topAssists = [...players].sort((a, b) => b.assists - a.assists)[0];
+        const topSaves = [...players].sort((a, b) => b.saves - a.saves)[0];
+        const topMVP = [...players].sort((a, b) => b.mvps - a.mvps)[0];
+        
+        report += `Top Scorer: ${topScorer.displayName} (${topScorer.goals} goals)\n`;
+        report += `Most Assists: ${topAssists.displayName} (${topAssists.assists} assists)\n`;
+        report += `Most Saves: ${topSaves.displayName} (${topSaves.saves} saves)\n`;
+        report += `Most MVPs: ${topMVP.displayName} (${topMVP.mvps} MVPs)\n\n`;
+    }
+    
+    // Upcoming Matches
+    if (upcomingMatches.length > 0) {
+        report += '📅 UPCOMING MATCHES\n';
+        report += '-'.repeat(25) + '\n';
+        
+        upcomingMatches.forEach((match, index) => {
+            const date = new Date(match.dateTime);
+            report += `${index + 1}. ${match.team1} vs ${match.team2}\n`;
+            report += `   Date: ${date.toLocaleDateString()} at ${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}\n`;
+            if (match.description) {
+                report += `   Note: ${match.description}\n`;
+            }
+            report += '\n';
+        });
+    }
+    
+    report += '='.repeat(60) + '\n';
+    report += 'End of Report - Generated by Discord Stats Bot\n';
+    report += '='.repeat(60) + '\n';
+    
+    return report;
+}
+
+async function generateCSVReport(teamFilter = null) {
+    const players = await db.getAllPlayers(teamFilter);
+    
+    let csv = 'Player Name,Team,Games Played,Goals,Assists,Saves,Shots,MVPs,Goals per Game,Assists per Game,MVP Rate %\n';
+    
+    players.forEach(player => {
+        const goalsPerGame = player.gamesPlayed > 0 ? (player.goals / player.gamesPlayed).toFixed(2) : '0.00';
+        const assistsPerGame = player.gamesPlayed > 0 ? (player.assists / player.gamesPlayed).toFixed(2) : '0.00';
+        const mvpRate = player.gamesPlayed > 0 ? ((player.mvps / player.gamesPlayed) * 100).toFixed(1) : '0.0';
+        
+        csv += `"${player.displayName}","${player.team}",${player.gamesPlayed},${player.goals},${player.assists},${player.saves},${player.shots || 0},${player.mvps},${goalsPerGame},${assistsPerGame},${mvpRate}\n`;
+    });
+    
+    return csv;
+}
+
+async function generateHTMLReport(teamFilter = null) {
+    const players = await db.getAllPlayers(teamFilter);
+    const aTeamStats = await db.getTeamStats('A-Team');
+    const bTeamStats = await db.getTeamStats('B-Team');
+    const upcomingMatches = await db.getUpcomingMatches(5);
+    
+    const reportDate = new Date().toLocaleString();
+    
+    let html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Discord Stats Bot Report</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #333;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(45deg, #ff5555, #5555ff);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        .content {
+            padding: 30px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        th {
+            background: #f8f9fa;
+            font-weight: bold;
+            color: #495057;
+        }
+        .team-a { color: #ff5555; font-weight: bold; }
+        .team-b { color: #5555ff; font-weight: bold; }
+        .section {
+            margin: 30px 0;
+        }
+        .section h2 {
+            color: #495057;
+            border-bottom: 2px solid #007bff;
+            padding-bottom: 10px;
+        }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin: 20px 0;
+        }
+        .stat-card {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            text-align: center;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        .match-item {
+            background: #f8f9fa;
+            padding: 15px;
+            margin: 10px 0;
+            border-radius: 8px;
+            border-left: 4px solid #007bff;
+        }
+        .footer {
+            text-align: center;
+            padding: 20px;
+            background: #f8f9fa;
+            color: #6c757d;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🏆 Discord Stats Bot Report</h1>
+            <p>Generated: ${reportDate}</p>
+            ${teamFilter ? `<p>Team Filter: ${teamFilter}</p>` : '<p>All Teams Report</p>'}
+        </div>
+        
+        <div class="content">`;
+    
+    // Team Standings
+    if (!teamFilter) {
+        const aWinRate = aTeamStats.wins + aTeamStats.losses > 0 ? 
+            ((aTeamStats.wins / (aTeamStats.wins + aTeamStats.losses)) * 100).toFixed(1) : '0.0';
+        const bWinRate = bTeamStats.wins + bTeamStats.losses > 0 ? 
+            ((bTeamStats.wins / (bTeamStats.wins + bTeamStats.losses)) * 100).toFixed(1) : '0.0';
+        
+        html += `
+            <div class="section">
+                <h2>📊 Team Standings</h2>
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <h3 class="team-a">A-Team</h3>
+                        <p><strong>${aTeamStats.wins}</strong> Wins</p>
+                        <p><strong>${aTeamStats.losses}</strong> Losses</p>
+                        <p><strong>${aWinRate}%</strong> Win Rate</p>
+                    </div>
+                    <div class="stat-card">
+                        <h3 class="team-b">B-Team</h3>
+                        <p><strong>${bTeamStats.wins}</strong> Wins</p>
+                        <p><strong>${bTeamStats.losses}</strong> Losses</p>
+                        <p><strong>${bWinRate}%</strong> Win Rate</p>
+                    </div>
+                </div>
+            </div>`;
+    }
+    
+    // Player Statistics
+    html += `
+        <div class="section">
+            <h2>👥 Player Statistics</h2>`;
+    
+    if (players.length === 0) {
+        html += '<p>No players found.</p>';
+    } else {
+        players.sort((a, b) => b.goals - a.goals);
+        
+        html += `
+            <table>
+                <thead>
+                    <tr>
+                        <th>Player</th>
+                        <th>Team</th>
+                        <th>Games</th>
+                        <th>Goals</th>
+                        <th>Assists</th>
+                        <th>Saves</th>
+                        <th>Shots</th>
+                        <th>MVPs</th>
+                        <th>Goals/Game</th>
+                        <th>MVP Rate</th>
+                    </tr>
+                </thead>
+                <tbody>`;
+        
+        players.forEach(player => {
+            const teamClass = player.team === 'A-Team' ? 'team-a' : 'team-b';
+            const goalsPerGame = player.gamesPlayed > 0 ? (player.goals / player.gamesPlayed).toFixed(2) : '0.00';
+            const mvpRate = player.gamesPlayed > 0 ? ((player.mvps / player.gamesPlayed) * 100).toFixed(1) : '0.0';
+            
+            html += `
+                <tr>
+                    <td><strong>${player.displayName}</strong></td>
+                    <td class="${teamClass}">${player.team}</td>
+                    <td>${player.gamesPlayed}</td>
+                    <td>${player.goals}</td>
+                    <td>${player.assists}</td>
+                    <td>${player.saves}</td>
+                    <td>${player.shots || 0}</td>
+                    <td>${player.mvps}</td>
+                    <td>${goalsPerGame}</td>
+                    <td>${mvpRate}%</td>
+                </tr>`;
+        });
+        
+        html += `
+                </tbody>
+            </table>`;
+    }
+    
+    html += '</div>';
+    
+    // Upcoming Matches
+    if (upcomingMatches.length > 0) {
+        html += `
+            <div class="section">
+                <h2>📅 Upcoming Matches</h2>`;
+        
+        upcomingMatches.forEach((match, index) => {
+            const date = new Date(match.dateTime);
+            html += `
+                <div class="match-item">
+                    <h4>${match.team1} vs ${match.team2}</h4>
+                    <p><strong>Date:</strong> ${date.toLocaleDateString()} at ${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
+                    ${match.description ? `<p><strong>Description:</strong> ${match.description}</p>` : ''}
+                </div>`;
+        });
+        
+        html += '</div>';
+    }
+    
+    html += `
+        </div>
+        
+        <div class="footer">
+            <p>Generated by Discord Stats Bot | ${reportDate}</p>
+        </div>
+    </div>
+</body>
+</html>`;
+    
+    return html;
+}
+
+async function generatePlayerReport(player, format = 'txt') {
+    const recentGames = await db.getRecentGames(player.discordId, 10);
+    const achievements = calculateAchievements(player);
+    const progress = calculateAchievementProgress(player);
+    
+    if (format === 'html') {
+        return generatePlayerHTMLReport(player, recentGames, achievements, progress);
+    } else {
+        return generatePlayerTextReport(player, recentGames, achievements, progress);
+    }
+}
+
+function generatePlayerTextReport(player, recentGames, achievements, progress) {
+    const reportDate = new Date().toLocaleString();
+    const goalsPerGame = player.gamesPlayed > 0 ? (player.goals / player.gamesPlayed).toFixed(2) : '0.00';
+    const assistsPerGame = player.gamesPlayed > 0 ? (player.assists / player.gamesPlayed).toFixed(2) : '0.00';
+    const mvpRate = player.gamesPlayed > 0 ? ((player.mvps / player.gamesPlayed) * 100).toFixed(1) : '0.0';
+    
+    let report = '';
+    report += '='.repeat(50) + '\n';
+    report += `PLAYER REPORT: ${player.displayName}\n`;
+    report += '='.repeat(50) + '\n';
+    report += `Generated: ${reportDate}\n`;
+    report += `Team: ${player.team}\n`;
+    report += '='.repeat(50) + '\n\n';
+    
+    // Basic Stats
+    report += '📊 STATISTICS\n';
+    report += '-'.repeat(15) + '\n';
+    report += `Games Played: ${player.gamesPlayed}\n`;
+    report += `Goals: ${player.goals} (${goalsPerGame} per game)\n`;
+    report += `Assists: ${player.assists} (${assistsPerGame} per game)\n`;
+    report += `Saves: ${player.saves}\n`;
+    report += `Shots: ${player.shots || 0}\n`;
+    report += `MVPs: ${player.mvps} (${mvpRate}% of games)\n\n`;
+    
+    // Recent Form
+    if (recentGames.length > 0) {
+        report += `📈 RECENT FORM (Last ${recentGames.length} games)\n`;
+        report += '-'.repeat(30) + '\n';
+        
+        const recentTotals = recentGames.reduce((totals, game) => {
+            totals.goals += game.goals || 0;
+            totals.assists += game.assists || 0;
+            totals.saves += game.saves || 0;
+            totals.mvps += game.mvps || 0;
+            return totals;
+        }, { goals: 0, assists: 0, saves: 0, mvps: 0 });
+        
+        report += `Goals: ${recentTotals.goals} (${(recentTotals.goals / recentGames.length).toFixed(2)} avg)\n`;
+        report += `Assists: ${recentTotals.assists} (${(recentTotals.assists / recentGames.length).toFixed(2)} avg)\n`;
+        report += `Saves: ${recentTotals.saves} (${(recentTotals.saves / recentGames.length).toFixed(2)} avg)\n`;
+        report += `MVPs: ${recentTotals.mvps}\n\n`;
+        
+        report += 'Recent Games:\n';
+        recentGames.slice(0, 5).forEach((game, index) => {
+            const date = new Date(game.timestamp).toLocaleDateString();
+            report += `${index + 1}. ${date}: ${game.goals}G ${game.assists}A ${game.saves}S${game.mvps > 0 ? ' MVP' : ''}\n`;
+        });
+        report += '\n';
+    }
+    
+    // Achievements
+    report += '🏆 ACHIEVEMENTS\n';
+    report += '-'.repeat(15) + '\n';
+    if (achievements === 'No achievements yet') {
+        report += 'No achievements unlocked yet.\n\n';
+    } else {
+        const achievementList = achievements.split('\n');
+        achievementList.forEach(achievement => {
+            report += `${achievement}\n`;
+        });
+        report += '\n';
+    }
+    
+    // Progress
+    if (progress.length > 0) {
+        report += '🎯 ACHIEVEMENT PROGRESS\n';
+        report += '-'.repeat(25) + '\n';
+        progress.slice(0, 5).forEach(prog => {
+            report += `${prog.achievement.name}: ${prog.current}/${prog.target} (${prog.percentage}%)\n`;
+            report += `  Need ${prog.needed} more ${prog.category.toLowerCase()}\n`;
+        });
+        report += '\n';
+    }
+    
+    report += '='.repeat(50) + '\n';
+    report += 'End of Player Report\n';
+    report += '='.repeat(50) + '\n';
+    
+    return report;
+}
+
+function generatePlayerHTMLReport(player, recentGames, achievements, progress) {
+    const reportDate = new Date().toLocaleString();
+    const teamColor = player.team === 'A-Team' ? '#ff5555' : '#5555ff';
+    const goalsPerGame = player.gamesPlayed > 0 ? (player.goals / player.gamesPlayed).toFixed(2) : '0.00';
+    const assistsPerGame = player.gamesPlayed > 0 ? (player.assists / player.gamesPlayed).toFixed(2) : '0.00';
+    const mvpRate = player.gamesPlayed > 0 ? ((player.mvps / player.gamesPlayed) * 100).toFixed(1) : '0.0';
+    
+    let html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>${player.displayName} - Player Report</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #333;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+        .header {
+            background: ${teamColor};
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        .content {
+            padding: 30px;
+        }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin: 20px 0;
+        }
+        .stat-card {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: ${teamColor};
+        }
+        .section {
+            margin: 25px 0;
+        }
+        .section h3 {
+            color: #495057;
+            border-bottom: 2px solid ${teamColor};
+            padding-bottom: 8px;
+        }
+        .progress-bar {
+            background: #e9ecef;
+            border-radius: 10px;
+            overflow: hidden;
+            margin: 5px 0;
+        }
+        .progress-fill {
+            background: ${teamColor};
+            height: 20px;
+            border-radius: 10px;
+            transition: width 0.3s ease;
+        }
+        .game-item {
+            background: #f8f9fa;
+            padding: 10px;
+            margin: 5px 0;
+            border-radius: 5px;
+            border-left: 3px solid ${teamColor};
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🏆 ${player.displayName}</h1>
+            <h2>${player.team}</h2>
+            <p>Player Report - ${reportDate}</p>
+        </div>
+        
+        <div class="content">
+            <div class="section">
+                <h3>📊 Statistics</h3>
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-value">${player.gamesPlayed}</div>
+                        <div>Games Played</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value">${player.goals}</div>
+                        <div>Goals (${goalsPerGame}/game)</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value">${player.assists}</div>
+                        <div>Assists (${assistsPerGame}/game)</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value">${player.saves}</div>
+                        <div>Saves</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value">${player.shots || 0}</div>
+                        <div>Shots</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value">${player.mvps}</div>
+                        <div>MVPs (${mvpRate}%)</div>
+                    </div>
+                </div>
+            </div>`;
+    
+    // Recent Games
+    if (recentGames.length > 0) {
+        html += `
+            <div class="section">
+                <h3>📈 Recent Form (Last ${recentGames.length} games)</h3>`;
+        
+        recentGames.slice(0, 5).forEach((game, index) => {
+            const date = new Date(game.timestamp).toLocaleDateString();
+            html += `
+                <div class="game-item">
+                    <strong>${date}:</strong> ${game.goals} Goals, ${game.assists} Assists, ${game.saves} Saves${game.mvps > 0 ? ' 🏆 MVP' : ''}
+                </div>`;
+        });
+        
+        html += '</div>';
+    }
+    
+    // Achievement Progress
+    if (progress.length > 0) {
+        html += `
+            <div class="section">
+                <h3>🎯 Achievement Progress</h3>`;
+        
+        progress.slice(0, 5).forEach(prog => {
+            html += `
+                <div style="margin: 15px 0;">
+                    <div><strong>${prog.achievement.name}</strong> - ${prog.current}/${prog.target} (${prog.percentage}%)</div>
+                    <div class="progress-bar">
+                        <div class="progress-fill" style="width: ${prog.percentage}%"></div>
+                    </div>
+                    <small>Need ${prog.needed} more ${prog.category.toLowerCase()}</small>
+                </div>`;
+        });
+        
+        html += '</div>';
+    }
+    
+    html += `
+        </div>
+    </div>
+</body>
+</html>`;
+    
+    return html;
 }
 
 // Create achievements list embed
@@ -1173,7 +2139,27 @@ client.on('interactionCreate', async interaction => {
                 { 
                     name: '🗓️ **Match Management**', 
                     value: '`/schedule-match <team1> <team2> <datetime>` - Schedule a match (Admin)\n' +
+                           '`/cancel-match [match-id] [teams] [date]` - Cancel scheduled match (Admin)\n' +
                            '`/match-calendar` - View upcoming scheduled matches', 
+                    inline: false 
+                },
+                
+                // Backup & Data Management
+                { 
+                    name: '💾 **Backup & Data Management**', 
+                    value: '`/create-backup` - Create manual backup (Admin)\n' +
+                           '`/list-backups` - List available backups (Admin)\n' +
+                           '`/restore-backup <folder>` - Restore from backup (Admin)\n' +
+                           '`/export-data` - Export data as JSON file (Admin)', 
+                    inline: false 
+                },
+                
+                // Report Generation
+                { 
+                    name: '📄 **Report Generation**', 
+                    value: '`/generate-report [format] [team]` - Generate downloadable stats report\n' +
+                           '`/player-report [user] [format]` - Generate individual player report\n' +
+                           '💡 **Formats**: Text (.txt), CSV (.csv), HTML (.html)', 
                     inline: false 
                 },
                 
@@ -1221,6 +2207,390 @@ client.on('interactionCreate', async interaction => {
             );
             
             await interaction.reply({ embeds: [embed] });
+            return;
+        }
+        
+        // Create Backup command (Admin only)
+        if (commandName === 'create-backup') {
+            if (!(await isAdmin(interaction.member))) {
+                await interaction.reply({ 
+                    content: `You need the "${config.adminRoleName}" role to use this command.`,
+                    flags: MessageFlags.Ephemeral
+                });
+                return;
+            }
+            
+            try {
+                await interaction.deferReply();
+                
+                const backup = await db.createBackup('manual');
+                
+                const embed = createEmbed('✅ Backup Created', 
+                    `📦 **Manual backup completed successfully!**\n\n` +
+                    `📅 **Created**: ${new Date(backup.manifest.timestamp).toLocaleString()}\n` +
+                    `📁 **Folder**: \`${path.basename(backup.folder)}\`\n` +
+                    `📊 **Files Backed Up**: ${backup.manifest.filesBackedUp}\n\n` +
+                    `💡 **Tip**: Use \`/list-backups\` to see all available backups.\n` +
+                    `🔄 **Restore**: Use \`/restore-backup\` if you ever need to restore this data.`, 
+                    config.colors.success);
+                
+                await interaction.editReply({ embeds: [embed] });
+            } catch (error) {
+                console.error('Error creating backup:', error);
+                await interaction.editReply({
+                    content: `❌ Error creating backup: ${error.message}`
+                });
+            }
+            
+            return;
+        }
+        
+        // Generate Report command
+        if (commandName === 'generate-report') {
+            try {
+                await interaction.deferReply();
+                
+                const format = interaction.options.getString('format') || 'txt';
+                const teamFilter = interaction.options.getString('team');
+                
+                let fileContent, fileName, fileExtension;
+                
+                switch (format) {
+                    case 'csv':
+                        fileContent = await generateCSVReport(teamFilter);
+                        fileExtension = 'csv';
+                        break;
+                    case 'html':
+                        fileContent = await generateHTMLReport(teamFilter);
+                        fileExtension = 'html';
+                        break;
+                    default:
+                        fileContent = await generateTextReport(teamFilter);
+                        fileExtension = 'txt';
+                }
+                
+                // Create filename
+                const dateStr = new Date().toISOString().slice(0, 10);
+                const teamStr = teamFilter ? `-${teamFilter.replace('-', '')}` : '';
+                fileName = `stats-report${teamStr}-${dateStr}.${fileExtension}`;
+                
+                // Create attachment
+                const buffer = Buffer.from(fileContent, 'utf8');
+                const attachment = new AttachmentBuilder(buffer, { name: fileName });
+                
+                const embed = createEmbed('📊 Stats Report Generated', 
+                    `✅ **${format.toUpperCase()} report created successfully!**\n\n` +
+                    `📁 **File**: ${fileName}\n` +
+                    `📋 **Format**: ${format.toUpperCase()}\n` +
+                    (teamFilter ? `🏆 **Team**: ${teamFilter}\n` : '📊 **Scope**: All Teams\n') +
+                    `📅 **Generated**: ${new Date().toLocaleString()}\n\n` +
+                    `💾 **Download the attached file to save your stats report.**`, 
+                    config.colors.success);
+                
+                await interaction.editReply({ 
+                    embeds: [embed],
+                    files: [attachment]
+                });
+            } catch (error) {
+                console.error('Error generating report:', error);
+                await interaction.editReply({
+                    content: `❌ Error generating report: ${error.message}`
+                });
+            }
+            
+            return;
+        }
+        
+        // Player Report command
+        if (commandName === 'player-report') {
+            const targetUser = interaction.options.getUser('user') || interaction.user;
+            const format = interaction.options.getString('format') || 'txt';
+            
+            try {
+                await interaction.deferReply();
+                
+                // Get player from database
+                const player = await db.getPlayer(targetUser.id);
+                
+                if (!player) {
+                    await interaction.editReply({
+                        content: `${targetUser.username} is not registered yet. An admin can register them with the \`/register\` command.`
+                    });
+                    return;
+                }
+                
+                // Generate player report
+                const reportContent = await generatePlayerReport(player, format);
+                
+                // Create filename
+                const dateStr = new Date().toISOString().slice(0, 10);
+                const playerName = player.displayName.replace(/[^a-zA-Z0-9]/g, '');
+                const fileName = `player-report-${playerName}-${dateStr}.${format}`;
+                
+                // Create attachment
+                const buffer = Buffer.from(reportContent, 'utf8');
+                const attachment = new AttachmentBuilder(buffer, { name: fileName });
+                
+                const embed = createEmbed('👤 Player Report Generated', 
+                    `✅ **Individual report created for ${player.displayName}!**\n\n` +
+                    `📁 **File**: ${fileName}\n` +
+                    `📋 **Format**: ${format.toUpperCase()}\n` +
+                    `🏆 **Team**: ${player.team}\n` +
+                    `📅 **Generated**: ${new Date().toLocaleString()}\n\n` +
+                    `💾 **Download the attached file for a detailed player analysis.**`, 
+                    config.colors.success);
+                
+                await interaction.editReply({ 
+                    embeds: [embed],
+                    files: [attachment]
+                });
+            } catch (error) {
+                console.error('Error generating player report:', error);
+                await interaction.editReply({
+                    content: `❌ Error generating player report: ${error.message}`
+                });
+            }
+            
+            return;
+        }
+        
+        // List Backups command (Admin only)
+        if (commandName === 'list-backups') {
+            if (!(await isAdmin(interaction.member))) {
+                await interaction.reply({ 
+                    content: `You need the "${config.adminRoleName}" role to use this command.`,
+                    flags: MessageFlags.Ephemeral
+                });
+                return;
+            }
+            
+            try {
+                const backups = await db.listBackups();
+                
+                const embed = createEmbed('📦 Available Backups', 
+                    backups.length > 0 ? 'Here are all available backups:' : 'No backups found.');
+                
+                if (backups.length === 0) {
+                    embed.addFields({
+                        name: '💡 Create Your First Backup',
+                        value: 'Use `/create-backup` to create a manual backup of your data.',
+                        inline: false
+                    });
+                } else {
+                    // Show most recent 10 backups
+                    let backupList = '';
+                    backups.slice(0, 10).forEach((backup, index) => {
+                        const date = new Date(backup.timestamp);
+                        const dateStr = date.toLocaleDateString();
+                        const timeStr = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                        
+                        backupList += `**${index + 1}.** \`${backup.folder}\`\n`;
+                        backupList += `📅 ${dateStr} at ${timeStr} (${backup.type})\n`;
+                        backupList += `📊 ${backup.filesBackedUp} files\n\n`;
+                    });
+                    
+                    embed.setDescription(backupList);
+                    
+                    if (backups.length > 10) {
+                        embed.addFields({
+                            name: `📋 Showing 10 of ${backups.length} backups`,
+                            value: 'Only the most recent backups are shown.',
+                            inline: false
+                        });
+                    }
+                    
+                    embed.addFields({
+                        name: '🔄 How to Restore',
+                        value: 'Copy the backup folder name and use `/restore-backup backup-folder:<name>`',
+                        inline: false
+                    });
+                }
+                
+                await interaction.reply({ embeds: [embed] });
+            } catch (error) {
+                console.error('Error listing backups:', error);
+                await interaction.reply({
+                    content: `❌ Error listing backups: ${error.message}`,
+                    flags: MessageFlags.Ephemeral
+                });
+            }
+            
+            return;
+        }
+        
+        // Restore Backup command (Admin only)
+        if (commandName === 'restore-backup') {
+            if (!(await isAdmin(interaction.member))) {
+                await interaction.reply({ 
+                    content: `You need the "${config.adminRoleName}" role to use this command.`,
+                    flags: MessageFlags.Ephemeral
+                });
+                return;
+            }
+            
+            const backupFolder = interaction.options.getString('backup-folder');
+            
+            try {
+                await interaction.deferReply();
+                
+                // Create a backup before restoring (safety measure)
+                await db.createBackup('pre-restore');
+                
+                const filesRestored = await db.restoreFromBackup(backupFolder);
+                
+                const embed = createEmbed('🔄 Data Restored', 
+                    `✅ **Successfully restored data from backup!**\n\n` +
+                    `📁 **Backup Used**: \`${backupFolder}\`\n` +
+                    `📊 **Files Restored**: ${filesRestored}\n` +
+                    `💾 **Safety Backup**: Created automatic backup before restore\n\n` +
+                    `⚠️ **Important**: The bot will reload with the restored data.`, 
+                    config.colors.success);
+                
+                await interaction.editReply({ embeds: [embed] });
+            } catch (error) {
+                console.error('Error restoring backup:', error);
+                await interaction.editReply({
+                    content: `❌ Error restoring backup: ${error.message}\n\nPlease check that the backup folder name is correct using \`/list-backups\`.`
+                });
+            }
+            
+            return;
+        }
+        
+        // Export Data command (Admin only)
+        if (commandName === 'export-data') {
+            if (!(await isAdmin(interaction.member))) {
+                await interaction.reply({ 
+                    content: `You need the "${config.adminRoleName}" role to use this command.`,
+                    flags: MessageFlags.Ephemeral
+                });
+                return;
+            }
+            
+            try {
+                await interaction.deferReply();
+                
+                // Read all data files
+                const players = await db.readPlayersFile();
+                const teamStats = await db.readTeamStatsFile();
+                const gameHistory = await db.readGameHistoryFile();
+                const scheduledMatches = await db.readScheduledMatchesFile();
+                
+                // Create export package
+                const exportData = {
+                    exportDate: new Date().toISOString(),
+                    version: '1.0',
+                    data: {
+                        players,
+                        teamStats,
+                        gameHistory,
+                        scheduledMatches
+                    },
+                    summary: {
+                        totalPlayers: players.length,
+                        totalGames: gameHistory.length,
+                        scheduledMatches: scheduledMatches.length
+                    }
+                };
+                
+                // Create downloadable file
+                const exportJson = JSON.stringify(exportData, null, 2);
+                const buffer = Buffer.from(exportJson, 'utf8');
+                const filename = `stats-export-${new Date().toISOString().slice(0, 10)}.json`;
+                
+                const attachment = new AttachmentBuilder(buffer, { name: filename });
+                
+                const embed = createEmbed('📤 Data Export Ready', 
+                    `✅ **Export completed successfully!**\n\n` +
+                    `📊 **Export Summary**:\n` +
+                    `👥 ${exportData.summary.totalPlayers} players\n` +
+                    `🎮 ${exportData.summary.totalGames} game records\n` +
+                    `📅 ${exportData.summary.scheduledMatches} scheduled matches\n\n` +
+                    `💾 **Download the attached JSON file to save your data externally.**\n` +
+                    `🔄 This file can be used to restore data if needed.`, 
+                    config.colors.success);
+                
+                await interaction.editReply({ 
+                    embeds: [embed],
+                    files: [attachment]
+                });
+            } catch (error) {
+                console.error('Error exporting data:', error);
+                await interaction.editReply({
+                    content: `❌ Error exporting data: ${error.message}`
+                });
+            }
+            
+            return;
+        }
+        
+        // Cancel Match command (Admin only)
+        if (commandName === 'cancel-match') {
+            // Check if user has admin role
+            if (!(await isAdmin(interaction.member))) {
+                await interaction.reply({ 
+                    content: `You need the "${config.adminRoleName}" role to use this command.`,
+                    flags: MessageFlags.Ephemeral
+                });
+                return;
+            }
+            
+            const matchId = interaction.options.getString('match-id');
+            const teams = interaction.options.getString('teams');
+            const dateStr = interaction.options.getString('date');
+            
+            try {
+                // If match ID is provided, cancel that specific match
+                if (matchId) {
+                    const cancelledMatch = await db.cancelMatch(matchId);
+                    
+                    const embed = createEmbed('Match Cancelled', 
+                        `✅ **${cancelledMatch.team1} vs ${cancelledMatch.team2}** has been cancelled.\n\n` +
+                        `📅 **Was scheduled for**: ${new Date(cancelledMatch.dateTime).toLocaleDateString()} at ${new Date(cancelledMatch.dateTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}\n` +
+                        (cancelledMatch.description ? `📝 **Description**: ${cancelledMatch.description}\n` : '') +
+                        `\n🗑️ Match removed from calendar.`, 
+                        config.colors.success);
+                    
+                    await interaction.reply({ embeds: [embed] });
+                    return;
+                }
+                
+                // Otherwise, show matches to cancel (filtered if criteria provided)
+                const matchesToCancel = await db.findMatches(teams, dateStr);
+                
+                if (matchesToCancel.length === 0) {
+                    let message = 'No upcoming matches found';
+                    if (teams || dateStr) {
+                        message += ' matching your criteria';
+                    }
+                    message += '. Use `/match-calendar` to see all scheduled matches.';
+                    
+                    await interaction.reply({
+                        content: message,
+                        flags: MessageFlags.Ephemeral
+                    });
+                    return;
+                }
+                
+                const embed = createCancelMatchEmbed(matchesToCancel);
+                await interaction.reply({ embeds: [embed] });
+                
+            } catch (error) {
+                console.error('Error cancelling match:', error);
+                
+                if (error.message === 'Match not found') {
+                    await interaction.reply({
+                        content: 'Match not found. It may have already been cancelled or the ID is incorrect. Use `/cancel-match` to see available matches.',
+                        flags: MessageFlags.Ephemeral
+                    });
+                } else {
+                    await interaction.reply({
+                        content: `Error cancelling match: ${error.message}`,
+                        flags: MessageFlags.Ephemeral
+                    });
+                }
+            }
+            
             return;
         }
         
@@ -1898,13 +3268,27 @@ client.on('interactionCreate', async interaction => {
                 return;
             }
             
-            await db.writePlayersFile([]);
-            
-            const embed = createEmbed('Player Data Wiped', 
-                '⚠️ All player stats have been reset to zero!', 
-                config.colors.error);
-            
-            await interaction.reply({ embeds: [embed] });
+            try {
+                await interaction.deferReply();
+                
+                // Create backup before wiping
+                await db.createBackup('pre-wipe-players');
+                
+                await db.writePlayersFile([]);
+                
+                const embed = createEmbed('Player Data Wiped', 
+                    '⚠️ All player stats have been reset to zero!\n\n' +
+                    '💾 **Safety backup created** before wiping data.\n' +
+                    '🔄 Use `/list-backups` and `/restore-backup` if you need to undo this action.', 
+                    config.colors.error);
+                
+                await interaction.editReply({ embeds: [embed] });
+            } catch (error) {
+                console.error('Error wiping players:', error);
+                await interaction.editReply({
+                    content: `❌ Error wiping player data: ${error.message}`
+                });
+            }
             return;
         }
 
@@ -1918,17 +3302,31 @@ client.on('interactionCreate', async interaction => {
                 return;
             }
             
-            const defaultTeamStats = {
-                'A-Team': { wins: 0, losses: 0 },
-                'B-Team': { wins: 0, losses: 0 }
-            };
-            await db.writeTeamStatsFile(defaultTeamStats);
-            
-            const embed = createEmbed('Team Records Wiped', 
-                '⚠️ All team win/loss records have been reset!', 
-                config.colors.error);
-            
-            await interaction.reply({ embeds: [embed] });
+            try {
+                await interaction.deferReply();
+                
+                // Create backup before wiping
+                await db.createBackup('pre-wipe-teams');
+                
+                const defaultTeamStats = {
+                    'A-Team': { wins: 0, losses: 0 },
+                    'B-Team': { wins: 0, losses: 0 }
+                };
+                await db.writeTeamStatsFile(defaultTeamStats);
+                
+                const embed = createEmbed('Team Records Wiped', 
+                    '⚠️ All team win/loss records have been reset!\n\n' +
+                    '💾 **Safety backup created** before wiping data.\n' +
+                    '🔄 Use `/list-backups` and `/restore-backup` if you need to undo this action.', 
+                    config.colors.error);
+                
+                await interaction.editReply({ embeds: [embed] });
+            } catch (error) {
+                console.error('Error wiping teams:', error);
+                await interaction.editReply({
+                    content: `❌ Error wiping team data: ${error.message}`
+                });
+            }
             return;
         }
 
@@ -1942,20 +3340,37 @@ client.on('interactionCreate', async interaction => {
                 return;
             }
             
-            // Reset all data files
-            await db.writePlayersFile([]);
-            
-            const defaultTeamStats = {
-                'A-Team': { wins: 0, losses: 0 },
-                'B-Team': { wins: 0, losses: 0 }
-            };
-            await db.writeTeamStatsFile(defaultTeamStats);
-            
-            const embed = createEmbed('ALL DATA WIPED', 
-                '🔥 Complete reset: All players and teams cleared!', 
-                config.colors.error);
-            
-            await interaction.reply({ embeds: [embed] });
+            try {
+                await interaction.deferReply();
+                
+                // Create backup before wiping everything
+                await db.createBackup('pre-wipe-all');
+                
+                // Reset all data files
+                await db.writePlayersFile([]);
+                await db.writeGameHistoryFile([]);
+                await db.writeScheduledMatchesFile([]);
+                
+                const defaultTeamStats = {
+                    'A-Team': { wins: 0, losses: 0 },
+                    'B-Team': { wins: 0, losses: 0 }
+                };
+                await db.writeTeamStatsFile(defaultTeamStats);
+                
+                const embed = createEmbed('ALL DATA WIPED', 
+                    '🔥 Complete reset: All players, teams, and history cleared!\n\n' +
+                    '💾 **Full backup created** before wiping all data.\n' +
+                    '🔄 Use `/list-backups` and `/restore-backup` to restore if needed.\n\n' +
+                    '⚠️ **This action affected**: Players, team records, game history, and scheduled matches.', 
+                    config.colors.error);
+                
+                await interaction.editReply({ embeds: [embed] });
+            } catch (error) {
+                console.error('Error wiping all data:', error);
+                await interaction.editReply({
+                    content: `❌ Error wiping data: ${error.message}`
+                });
+            }
             return;
         }
         
