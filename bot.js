@@ -804,20 +804,12 @@ const commands = [
         .setDescription('Schedule a match between teams (Admin only)')
         .addStringOption(option =>
             option.setName('team1')
-                .setDescription('First team')
-                .setRequired(true)
-                .addChoices(
-                    { name: 'A-Team', value: 'A-Team' },
-                    { name: 'B-Team', value: 'B-Team' }
-                ))
+                .setDescription('First team (e.g., A-Team, B-Team, or external team like ATG)')
+                .setRequired(true))
         .addStringOption(option =>
             option.setName('team2')
-                .setDescription('Second team')
-                .setRequired(true)
-                .addChoices(
-                    { name: 'A-Team', value: 'A-Team' },
-                    { name: 'B-Team', value: 'B-Team' }
-                ))
+                .setDescription('Second team (e.g., A-Team, B-Team, or external team)')
+                .setRequired(true))
         .addStringOption(option =>
             option.setName('datetime')
                 .setDescription('Date and time (e.g., "2025-06-30 19:00" or "June 30 7pm")')
@@ -881,12 +873,8 @@ const commands = [
                 ))
         .addStringOption(option =>
             option.setName('team')
-                .setDescription('Generate report for specific team only')
-                .setRequired(false)
-                .addChoices(
-                    { name: 'A-Team', value: 'A-Team' },
-                    { name: 'B-Team', value: 'B-Team' }
-                )),
+                .setDescription('Generate report for specific team only (use /list-teams to see available teams)')
+                .setRequired(false)),
 
     new SlashCommandBuilder()
         .setName('player-report')
@@ -902,7 +890,43 @@ const commands = [
                 .addChoices(
                     { name: 'Text File (.txt)', value: 'txt' },
                     { name: 'HTML Web Page (.html)', value: 'html' }
-                ))
+                )),
+
+    new SlashCommandBuilder()
+        .setName('create-team')
+        .setDescription('Create a new team (Admin only)')
+        .addStringOption(option =>
+            option.setName('name')
+                .setDescription('Name of the new team (e.g., C-Team, Reserves, etc.)')
+                .setRequired(true)),
+
+    new SlashCommandBuilder()
+        .setName('list-teams')
+        .setDescription('List all available teams'),
+
+    new SlashCommandBuilder()
+        .setName('delete-team')
+        .setDescription('Delete a team (Admin only)')
+        .addStringOption(option =>
+            option.setName('name')
+                .setDescription('Name of the team to delete')
+                .setRequired(true))
+        .addStringOption(option =>
+            option.setName('confirmation')
+                .setDescription('Type "CONFIRM" to proceed with team deletion')
+                .setRequired(true)),
+
+    new SlashCommandBuilder()
+        .setName('rename-team')
+        .setDescription('Rename a team (Admin only)')
+        .addStringOption(option =>
+            option.setName('old-name')
+                .setDescription('Current team name')
+                .setRequired(true))
+        .addStringOption(option =>
+            option.setName('new-name')
+                .setDescription('New team name')
+                .setRequired(true))
 ];
 
 // Add error handling utility function
@@ -1090,6 +1114,20 @@ client.once('ready', () => {
     // Create initial backup on startup (if no recent backup exists)
     setTimeout(async () => {
         try {
+            // Ensure default teams exist
+            const allTeams = await db.getAllTeams();
+            if (allTeams.length === 0) {
+                console.log('🏆 No teams found, creating default teams...');
+                const defaultTeamStats = {
+                    'A-Team': { wins: 0, losses: 0 },
+                    'B-Team': { wins: 0, losses: 0 }
+                };
+                await db.writeTeamStatsFile(defaultTeamStats);
+                console.log('✅ Default teams (A-Team, B-Team) created');
+            } else {
+                console.log(`✅ Found ${allTeams.length} teams: ${allTeams.join(', ')}`);
+            }
+            
             const backups = await db.listBackups();
             const now = new Date();
             const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
@@ -1106,7 +1144,7 @@ client.once('ready', () => {
                 console.log('✅ Recent backup exists, skipping startup backup');
             }
         } catch (error) {
-            console.error('❌ Error checking for recent backup:', error);
+            console.error('❌ Error during startup initialization:', error);
         }
     }, 30000); // 30 seconds after startup
 });
@@ -2138,9 +2176,10 @@ client.on('interactionCreate', async interaction => {
                 // Match Management
                 { 
                     name: '🗓️ **Match Management**', 
-                    value: '`/schedule-match <team1> <team2> <datetime>` - Schedule a match (Admin)\n' +
+                    value: '`/schedule-match <team1> <team2> <datetime>` - Schedule match (Admin)\n' +
                            '`/cancel-match [match-id] [teams] [date]` - Cancel scheduled match (Admin)\n' +
-                           '`/match-calendar` - View upcoming scheduled matches', 
+                           '`/match-calendar` - View upcoming scheduled matches\n' +
+                           '💡 **Teams**: Use A-Team, B-Team, or any custom team name (ATG, etc.)', 
                     inline: false 
                 },
                 
@@ -2173,7 +2212,7 @@ client.on('interactionCreate', async interaction => {
                 // Player Management
                 { 
                     name: '👥 **Player Management**', 
-                    value: '`/register <user> <team>` - Register a new player', 
+                    value: '`/register <user> <team>` - Register a new player to a team', 
                     inline: true 
                 },
                 
@@ -2191,17 +2230,19 @@ client.on('interactionCreate', async interaction => {
                     value: '`/team-win <team> [wins]` - Add win(s) to team\n' +
                            '`/team-loss <team> [losses]` - Add loss(es) to team\n' +
                            '`/team-remove-win <team> [wins]` - Remove win(s)\n' +
-                           '`/team-remove-loss <team> [losses]` - Remove loss(es)', 
+                           '`/team-remove-loss <team> [losses]` - Remove loss(es)\n\n' +
+                           '💡 **Note**: All commands work with any team name!', 
                     inline: false 
                 },
                 
                 // Dangerous Commands
                 { 
                     name: '⚠️ **DANGER ZONE - Data Reset Commands**', 
-                    value: '**Use with extreme caution!**\n' +
-                           '`/wipe-players` - 🔥 Wipe all player stats\n' +
-                           '`/wipe-teams` - 🔥 Reset all team records\n' +
-                           '`/wipe-all` - 💀 **COMPLETE RESET** - Wipes everything!', 
+                    value: '**Use with extreme caution! Requires confirmation.**\n' +
+                           '`/wipe-players` - 🔥 Wipe all player stats (type "CONFIRM")\n' +
+                           '`/wipe-teams` - 🔥 Reset all team records (type "CONFIRM")\n' +
+                           '`/wipe-all` - 💀 **COMPLETE RESET** (type "CONFIRM DELETE ALL")\n\n' +
+                           '💾 **Safety**: All wipe commands create automatic backups first!', 
                     inline: false 
                 }
             );
@@ -2245,6 +2286,186 @@ client.on('interactionCreate', async interaction => {
             return;
         }
         
+        // Create Team command (Admin only)
+        if (commandName === 'create-team') {
+            if (!(await isAdmin(interaction.member))) {
+                await interaction.reply({ 
+                    content: `You need the "${config.adminRoleName}" role to use this command.`,
+                    flags: MessageFlags.Ephemeral
+                });
+                return;
+            }
+            
+            const teamName = interaction.options.getString('name').trim();
+            
+            // Validate team name
+            if (teamName.length < 2 || teamName.length > 50) {
+                await interaction.reply({
+                    content: 'Team name must be between 2 and 50 characters long.',
+                    flags: MessageFlags.Ephemeral
+                });
+                return;
+            }
+            
+            try {
+                await db.createTeam(teamName);
+                
+                const embed = createEmbed('✅ Team Created', 
+                    `🏆 **${teamName}** has been created successfully!\n\n` +
+                    `📊 **Initial Record**: 0 wins, 0 losses\n` +
+                    `👥 **Players**: Ready to register players with \`/register\`\n` +
+                    `📋 **View Teams**: Use \`/list-teams\` to see all teams`, 
+                    config.colors.success);
+                
+                await interaction.reply({ embeds: [embed] });
+            } catch (error) {
+                await interaction.reply({
+                    content: `❌ Error creating team: ${error.message}`,
+                    flags: MessageFlags.Ephemeral
+                });
+            }
+            
+            return;
+        }
+        
+        // List Teams command
+        if (commandName === 'list-teams') {
+            try {
+                const allTeams = await db.getAllTeams();
+                const teamStats = await db.readTeamStatsFile();
+                
+                const embed = createEmbed('🏆 Available Teams', 
+                    allTeams.length > 0 ? 'Here are all available teams:' : 'No teams found.');
+                
+                if (allTeams.length === 0) {
+                    embed.addFields({
+                        name: '💡 Create Your First Team',
+                        value: 'Use `/create-team` to create a new team.',
+                        inline: false
+                    });
+                } else {
+                    let teamList = '';
+                    allTeams.forEach((team, index) => {
+                        const stats = teamStats[team];
+                        const winRate = stats.wins + stats.losses > 0 ? 
+                            ((stats.wins / (stats.wins + stats.losses)) * 100).toFixed(1) : '0.0';
+                        
+                        teamList += `**${index + 1}. ${team}**\n`;
+                        teamList += `📊 Record: ${stats.wins}W-${stats.losses}L (${winRate}% win rate)\n\n`;
+                    });
+                    
+                    embed.setDescription(teamList);
+                    
+                    embed.addFields({
+                        name: '🛠️ Team Management',
+                        value: '• `/create-team` - Create new team\n' +
+                               '• `/rename-team` - Rename existing team\n' +
+                               '• `/delete-team` - Delete empty team',
+                        inline: false
+                    });
+                }
+                
+                await interaction.reply({ embeds: [embed] });
+            } catch (error) {
+                console.error('Error listing teams:', error);
+                await interaction.reply({
+                    content: `❌ Error listing teams: ${error.message}`,
+                    flags: MessageFlags.Ephemeral
+                });
+            }
+            
+            return;
+        }
+        
+        // Delete Team command (Admin only)
+        if (commandName === 'delete-team') {
+            if (!(await isAdmin(interaction.member))) {
+                await interaction.reply({ 
+                    content: `You need the "${config.adminRoleName}" role to use this command.`,
+                    flags: MessageFlags.Ephemeral
+                });
+                return;
+            }
+            
+            const teamName = interaction.options.getString('name').trim();
+            const confirmation = interaction.options.getString('confirmation');
+            
+            // Check confirmation
+            if (confirmation !== 'CONFIRM') {
+                await interaction.reply({
+                    content: '❌ **Confirmation failed!**\n\nTo delete a team, you must type exactly: `CONFIRM`\n\n⚠️ **Note**: You can only delete teams that have no players assigned.',
+                    flags: MessageFlags.Ephemeral
+                });
+                return;
+            }
+            
+            try {
+                await db.deleteTeam(teamName);
+                
+                const embed = createEmbed('✅ Team Deleted', 
+                    `🗑️ **${teamName}** has been permanently deleted.\n\n` +
+                    `📊 **What was removed:**\n` +
+                    `• Team record (wins/losses)\n` +
+                    `• Team from available options\n\n` +
+                    `💡 **Note**: No player data was affected.`, 
+                    config.colors.success);
+                
+                await interaction.reply({ embeds: [embed] });
+            } catch (error) {
+                await interaction.reply({
+                    content: `❌ Error deleting team: ${error.message}`,
+                    flags: MessageFlags.Ephemeral
+                });
+            }
+            
+            return;
+        }
+        
+        // Rename Team command (Admin only)
+        if (commandName === 'rename-team') {
+            if (!(await isAdmin(interaction.member))) {
+                await interaction.reply({ 
+                    content: `You need the "${config.adminRoleName}" role to use this command.`,
+                    flags: MessageFlags.Ephemeral
+                });
+                return;
+            }
+            
+            const oldName = interaction.options.getString('old-name').trim();
+            const newName = interaction.options.getString('new-name').trim();
+            
+            // Validate new team name
+            if (newName.length < 2 || newName.length > 50) {
+                await interaction.reply({
+                    content: 'New team name must be between 2 and 50 characters long.',
+                    flags: MessageFlags.Ephemeral
+                });
+                return;
+            }
+            
+            try {
+                const result = await db.renameTeam(oldName, newName);
+                
+                const embed = createEmbed('✅ Team Renamed', 
+                    `🔄 **${result.oldName}** has been renamed to **${result.newName}**!\n\n` +
+                    `📊 **What was updated:**\n` +
+                    `• Team record maintained\n` +
+                    `• ${result.playersUpdated} player(s) updated\n` +
+                    `• All references changed\n\n` +
+                    `💡 **All historical data preserved.**`, 
+                    config.colors.success);
+                
+                await interaction.reply({ embeds: [embed] });
+            } catch (error) {
+                await interaction.reply({
+                    content: `❌ Error renaming team: ${error.message}`,
+                    flags: MessageFlags.Ephemeral
+                });
+            }
+            
+            return;
+        }
+        
         // Generate Report command
         if (commandName === 'generate-report') {
             try {
@@ -2252,6 +2473,17 @@ client.on('interactionCreate', async interaction => {
                 
                 const format = interaction.options.getString('format') || 'txt';
                 const teamFilter = interaction.options.getString('team');
+                
+                // Validate team if specified
+                if (teamFilter) {
+                    const allTeams = await db.getAllTeams();
+                    if (!allTeams.includes(teamFilter)) {
+                        await interaction.editReply({
+                            content: `Team "${teamFilter}" does not exist. Use \`/list-teams\` to see available teams.`
+                        });
+                        return;
+                    }
+                }
                 
                 let fileContent, fileName, fileExtension;
                 
@@ -2689,13 +2921,13 @@ client.on('interactionCreate', async interaction => {
                 return;
             }
             
-            const team1 = interaction.options.getString('team1');
-            const team2 = interaction.options.getString('team2');
+            const team1 = interaction.options.getString('team1').trim();
+            const team2 = interaction.options.getString('team2').trim();
             const dateTimeStr = interaction.options.getString('datetime');
             const description = interaction.options.getString('description') || '';
             
-            // Check if teams are different
-            if (team1 === team2) {
+            // Check if teams are different (case insensitive)
+            if (team1.toLowerCase() === team2.toLowerCase()) {
                 await interaction.reply({
                     content: 'Cannot schedule a match between the same team!',
                     flags: MessageFlags.Ephemeral
@@ -2724,7 +2956,8 @@ client.on('interactionCreate', async interaction => {
                     `📅 **Date**: ${matchDateTime.toLocaleDateString()}\n` +
                     `⏰ **Time**: ${matchDateTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}\n` +
                     (description ? `📝 **Description**: ${description}\n` : '') +
-                    `\n✅ Match has been scheduled successfully!`, 
+                    `\n✅ Match has been scheduled successfully!\n\n` +
+                    `💡 **Note**: You can schedule matches against any team (A-Team, B-Team, or external teams like ATG, etc.)`, 
                     config.colors.success);
                 
                 await interaction.reply({ embeds: [embed] });
@@ -3268,6 +3501,17 @@ client.on('interactionCreate', async interaction => {
                 return;
             }
             
+            const confirmation = interaction.options.getString('confirmation');
+            
+            // Check confirmation
+            if (confirmation !== 'CONFIRM') {
+                await interaction.reply({
+                    content: '❌ **Confirmation failed!**\n\nTo wipe all player data, you must type exactly: `CONFIRM`\n\n⚠️ **This action is irreversible** (unless you have backups).',
+                    flags: MessageFlags.Ephemeral
+                });
+                return;
+            }
+            
             try {
                 await interaction.deferReply();
                 
@@ -3275,11 +3519,16 @@ client.on('interactionCreate', async interaction => {
                 await db.createBackup('pre-wipe-players');
                 
                 await db.writePlayersFile([]);
+                await db.writeGameHistoryFile([]); // Also clear game history
                 
-                const embed = createEmbed('Player Data Wiped', 
-                    '⚠️ All player stats have been reset to zero!\n\n' +
+                const embed = createEmbed('⚠️ Player Data Wiped', 
+                    '🔥 **All player stats have been permanently deleted!**\n\n' +
+                    '📊 **What was wiped:**\n' +
+                    '• All player statistics\n' +
+                    '• All game history records\n\n' +
                     '💾 **Safety backup created** before wiping data.\n' +
-                    '🔄 Use `/list-backups` and `/restore-backup` if you need to undo this action.', 
+                    '🔄 Use `/list-backups` and `/restore-backup` if you need to undo this action.\n\n' +
+                    '⚠️ **Team records were NOT affected.**', 
                     config.colors.error);
                 
                 await interaction.editReply({ embeds: [embed] });
@@ -3302,22 +3551,43 @@ client.on('interactionCreate', async interaction => {
                 return;
             }
             
+            const confirmation = interaction.options.getString('confirmation');
+            
+            // Check confirmation
+            if (confirmation !== 'CONFIRM') {
+                await interaction.reply({
+                    content: '❌ **Confirmation failed!**\n\nTo wipe all team records, you must type exactly: `CONFIRM`\n\n⚠️ **This action is irreversible** (unless you have backups).',
+                    flags: MessageFlags.Ephemeral
+                });
+                return;
+            }
+            
             try {
                 await interaction.deferReply();
                 
                 // Create backup before wiping
                 await db.createBackup('pre-wipe-teams');
                 
-                const defaultTeamStats = {
-                    'A-Team': { wins: 0, losses: 0 },
-                    'B-Team': { wins: 0, losses: 0 }
-                };
-                await db.writeTeamStatsFile(defaultTeamStats);
+                // Reset all teams to 0-0 record
+                const allTeams = await db.getAllTeams();
+                const resetTeamStats = {};
+                allTeams.forEach(team => {
+                    resetTeamStats[team] = { wins: 0, losses: 0 };
+                });
                 
-                const embed = createEmbed('Team Records Wiped', 
-                    '⚠️ All team win/loss records have been reset!\n\n' +
+                await db.writeTeamStatsFile(resetTeamStats);
+                
+                let teamsResetList = '';
+                allTeams.forEach(team => {
+                    teamsResetList += `• ${team}: 0W-0L\n`;
+                });
+                
+                const embed = createEmbed('⚠️ Team Records Wiped', 
+                    '🔥 **All team win/loss records have been reset!**\n\n' +
+                    '📊 **Teams reset:**\n' + teamsResetList + '\n' +
                     '💾 **Safety backup created** before wiping data.\n' +
-                    '🔄 Use `/list-backups` and `/restore-backup` if you need to undo this action.', 
+                    '🔄 Use `/list-backups` and `/restore-backup` if you need to undo this action.\n\n' +
+                    '⚠️ **Player stats were NOT affected.**', 
                     config.colors.error);
                 
                 await interaction.editReply({ embeds: [embed] });
@@ -3340,6 +3610,17 @@ client.on('interactionCreate', async interaction => {
                 return;
             }
             
+            const confirmation = interaction.options.getString('confirmation');
+            
+            // Check confirmation - requires more specific confirmation for total wipe
+            if (confirmation !== 'CONFIRM DELETE ALL') {
+                await interaction.reply({
+                    content: '❌ **Confirmation failed!**\n\nTo completely wipe ALL data, you must type exactly: `CONFIRM DELETE ALL`\n\n💀 **This will delete EVERYTHING:**\n• All player stats\n• All team records\n• All game history\n• All scheduled matches\n\n⚠️ **This action is irreversible** (unless you have backups).',
+                    flags: MessageFlags.Ephemeral
+                });
+                return;
+            }
+            
             try {
                 await interaction.deferReply();
                 
@@ -3351,17 +3632,27 @@ client.on('interactionCreate', async interaction => {
                 await db.writeGameHistoryFile([]);
                 await db.writeScheduledMatchesFile([]);
                 
+                // Reset to default teams (A-Team and B-Team)
                 const defaultTeamStats = {
                     'A-Team': { wins: 0, losses: 0 },
                     'B-Team': { wins: 0, losses: 0 }
                 };
                 await db.writeTeamStatsFile(defaultTeamStats);
                 
-                const embed = createEmbed('ALL DATA WIPED', 
-                    '🔥 Complete reset: All players, teams, and history cleared!\n\n' +
+                const embed = createEmbed('💀 ALL DATA WIPED', 
+                    '🔥 **COMPLETE RESET: Everything has been permanently deleted!**\n\n' +
+                    '📊 **What was wiped:**\n' +
+                    '• ❌ All player statistics\n' +
+                    '• ❌ All team win/loss records\n' +
+                    '• ❌ All game history\n' +
+                    '• ❌ All scheduled matches\n' +
+                    '• ❌ All custom teams\n\n' +
+                    '🔄 **Reset to defaults:**\n' +
+                    '• ✅ A-Team: 0W-0L\n' +
+                    '• ✅ B-Team: 0W-0L\n\n' +
                     '💾 **Full backup created** before wiping all data.\n' +
                     '🔄 Use `/list-backups` and `/restore-backup` to restore if needed.\n\n' +
-                    '⚠️ **This action affected**: Players, team records, game history, and scheduled matches.', 
+                    '🎮 **Your bot is now completely reset with default teams ready for fresh data.**', 
                     config.colors.error);
                 
                 await interaction.editReply({ embeds: [embed] });
