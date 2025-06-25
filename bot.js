@@ -1,4 +1,90 @@
-// Discord Stats Bot for tracking team statistics
+// Parse date string for match scheduling with Sweden timezone
+function parseMatchDateTime(dateTimeStr) {
+    try {
+        let parsedDate;
+        
+        // Try parsing ISO format first (2025-06-30 19:00)
+        if (dateTimeStr.match(/^\d{4}-\d{2}-\d{2}\s\d{1,2}:\d{2}$/)) {
+            parsedDate = new Date(dateTimeStr);
+        } else {
+            // Try parsing natural language (June 30 7pm, Jun 30 19:00)
+            parsedDate = new Date(dateTimeStr);
+        }
+        
+        if (isNaN(parsedDate.getTime())) {
+            throw new Error('Invalid date format');
+        }
+        
+        return parsedDate;
+    } catch (error) {
+        throw new Error('Please use format like "2025-06-30 19:00" or "June 30 7pm"');
+    }
+}
+
+// Format date for Sweden timezone display
+function formatSwedenTime(date) {
+    try {
+        // Create formatter for Sweden timezone
+        const swedenFormatter = new Intl.DateTimeFormat('sv-SE', {
+            timeZone: 'Europe/Stockholm',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false
+        });
+        
+        // Get timezone offset for Sweden at this date
+        const swedenDate = new Date(date.toLocaleString('en-US', { timeZone: 'Europe/Stockholm' }));
+        const utcDate = new Date(date.toUTCString());
+        const offsetMinutes = (swedenDate.getTime() - utcDate.getTime()) / (1000 * 60);
+        const offsetHours = offsetMinutes / 60;
+        
+        // Format the date parts
+        const parts = swedenFormatter.formatToParts(date);
+        const datePart = `${parts.find(p => p.type === 'day').value}/${parts.find(p => p.type === 'month').value}/${parts.find(p => p.type === 'year').value}`;
+        const timePart = `${parts.find(p => p.type === 'hour').value}:${parts.find(p => p.type === 'minute').value}`;
+        
+        // Create timezone indicator
+        const offsetSign = offsetHours >= 0 ? '+' : '';
+        const timezoneIndicator = `(UTC${offsetSign}${offsetHours})`;
+        
+        return {
+            date: datePart,
+            time: timePart,
+            timezone: timezoneIndicator,
+            full: `${datePart} at ${timePart} ${timezoneIndicator}`
+        };
+    } catch (error) {
+        console.error('Error formatting Sweden time:', error);
+        // Fallback to simple formatting
+        const formatter = new Intl.DateTimeFormat('sv-SE', {
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false
+        });
+        
+        const formatted = formatter.format(date);
+        const [datePart, timePart] = formatted.split(' ');
+        
+        return {
+            date: datePart,
+            time: timePart,
+            timezone: '(Sweden Time)',
+            full: `${datePart} at ${timePart} (Sweden Time)`
+        };
+    }
+}
+
+// Format date for match reminders (shorter format)
+function formatSwedenTimeShort(date) {
+    const formatted = formatSwedenTime(date);
+    return `${formatted.time} ${formatted.timezone}`;
+}// Discord Stats Bot for tracking team statistics
 const { Client, GatewayIntentBits, Partials, EmbedBuilder, PermissionFlagsBits, REST, Routes, SlashCommandBuilder, MessageFlags, AttachmentBuilder } = require('discord.js');
 const fs = require('fs').promises;
 const path = require('path');
@@ -1037,13 +1123,15 @@ client.once('ready', () => {
                         
                         if (channel) {
                             const timeUntilMatch = Math.round((matchTime - now) / (1000 * 60)); // minutes
+                            const swedenTime = formatSwedenTime(matchTime);
                             
                             const embed = createEmbed('⏰ Match Reminder', 
                                 `🚨 **${match.team1} vs ${match.team2}**\n\n` +
                                 `⏰ Starting in **${timeUntilMatch} minutes**!\n` +
-                                `📅 ${matchTime.toLocaleDateString()} at ${matchTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}\n` +
+                                `📅 ${swedenTime.full}\n` +
                                 (match.description ? `📝 ${match.description}\n` : '') +
-                                `\nGood luck to both teams! 🏆`, 
+                                `\nGood luck to both teams! 🏆\n` +
+                                `🇸🇪 Time shown in Sweden timezone`, 
                                 config.colors.primary);
                             
                             await channel.send({ embeds: [embed] });
@@ -1447,11 +1535,10 @@ function createMatchCalendarEmbed(upcomingMatches) {
     let matchList = '';
     upcomingMatches.forEach((match, index) => {
         const date = new Date(match.dateTime);
-        const dateStr = date.toLocaleDateString();
-        const timeStr = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        const swedenTime = formatSwedenTime(date);
         
         matchList += `**${index + 1}.** ${match.team1} vs ${match.team2}\n`;
-        matchList += `📅 ${dateStr} at ${timeStr}\n`;
+        matchList += `📅 ${swedenTime.date} at ${swedenTime.time} ${swedenTime.timezone}\n`;
         matchList += `🔢 ID: \`${match.id}\`\n`;
         if (match.description) {
             matchList += `📝 ${match.description}\n`;
@@ -1462,7 +1549,7 @@ function createMatchCalendarEmbed(upcomingMatches) {
     embed.setDescription(matchList);
     embed.addFields({
         name: '🛠️ Management',
-        value: 'Use `/cancel-match match-id:<id>` to cancel a specific match.',
+        value: 'Use `/cancel-match match-id:<id>` to cancel a specific match.\n🇸🇪 All times shown in Sweden timezone.',
         inline: false
     });
     
@@ -1481,11 +1568,10 @@ function createCancelMatchEmbed(matchesToCancel) {
     let matchList = '';
     matchesToCancel.forEach((match, index) => {
         const date = new Date(match.dateTime);
-        const dateStr = date.toLocaleDateString();
-        const timeStr = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        const swedenTime = formatSwedenTime(date);
         
         matchList += `**${index + 1}.** ${match.team1} vs ${match.team2}\n`;
-        matchList += `📅 ${dateStr} at ${timeStr}\n`;
+        matchList += `📅 ${swedenTime.date} at ${swedenTime.time} ${swedenTime.timezone}\n`;
         matchList += `🔢 Match ID: \`${match.id}\`\n`;
         if (match.description) {
             matchList += `📝 ${match.description}\n`;
@@ -1496,7 +1582,7 @@ function createCancelMatchEmbed(matchesToCancel) {
     embed.setDescription(matchList);
     embed.addFields({
         name: '🗑️ How to Cancel',
-        value: 'Copy the Match ID of the match you want to cancel and use it with `/cancel-match` again, or contact an admin.',
+        value: 'Copy the Match ID of the match you want to cancel and use it with `/cancel-match` again, or contact an admin.\n🇸🇪 All times shown in Sweden timezone.',
         inline: false
     });
     
@@ -1581,8 +1667,9 @@ async function generateTextReport(teamFilter = null) {
         
         upcomingMatches.forEach((match, index) => {
             const date = new Date(match.dateTime);
+            const swedenTime = formatSwedenTime(date);
             report += `${index + 1}. ${match.team1} vs ${match.team2}\n`;
-            report += `   Date: ${date.toLocaleDateString()} at ${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}\n`;
+            report += `   Date: ${swedenTime.full}\n`;
             if (match.description) {
                 report += `   Note: ${match.description}\n`;
             }
@@ -1805,10 +1892,11 @@ async function generateHTMLReport(teamFilter = null) {
         
         upcomingMatches.forEach((match, index) => {
             const date = new Date(match.dateTime);
+            const swedenTime = formatSwedenTime(date);
             html += `
                 <div class="match-item">
                     <h4>${match.team1} vs ${match.team2}</h4>
-                    <p><strong>Date:</strong> ${date.toLocaleDateString()} at ${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
+                    <p><strong>Date:</strong> ${swedenTime.full}</p>
                     ${match.description ? `<p><strong>Description:</strong> ${match.description}</p>` : ''}
                 </div>`;
         });
@@ -2179,7 +2267,8 @@ client.on('interactionCreate', async interaction => {
                     value: '`/schedule-match <team1> <team2> <datetime>` - Schedule match (Admin)\n' +
                            '`/cancel-match [match-id] [teams] [date]` - Cancel scheduled match (Admin)\n' +
                            '`/match-calendar` - View upcoming scheduled matches\n' +
-                           '💡 **Teams**: Use A-Team, B-Team, or any custom team name (ATG, etc.)', 
+                           '💡 **Teams**: Use A-Team, B-Team, or any custom team name (ATG, etc.)\n' +
+                           '🇸🇪 **Timezone**: All times displayed in Sweden timezone with UTC offset', 
                     inline: false 
                 },
                 
@@ -2776,11 +2865,14 @@ client.on('interactionCreate', async interaction => {
                 if (matchId) {
                     const cancelledMatch = await db.cancelMatch(matchId);
                     
+                    const swedenTime = formatSwedenTime(new Date(cancelledMatch.dateTime));
+                    
                     const embed = createEmbed('Match Cancelled', 
                         `✅ **${cancelledMatch.team1} vs ${cancelledMatch.team2}** has been cancelled.\n\n` +
-                        `📅 **Was scheduled for**: ${new Date(cancelledMatch.dateTime).toLocaleDateString()} at ${new Date(cancelledMatch.dateTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}\n` +
+                        `📅 **Was scheduled for**: ${swedenTime.full}\n` +
                         (cancelledMatch.description ? `📝 **Description**: ${cancelledMatch.description}\n` : '') +
-                        `\n🗑️ Match removed from calendar.`, 
+                        `\n🗑️ Match removed from calendar.\n` +
+                        `🇸🇪 Time shown in Sweden timezone.`, 
                         config.colors.success);
                     
                     await interaction.reply({ embeds: [embed] });
@@ -2951,13 +3043,16 @@ client.on('interactionCreate', async interaction => {
                 // Schedule the match
                 const scheduledMatch = await db.scheduleMatch(team1, team2, matchDateTime.toISOString(), description);
                 
+                const swedenTime = formatSwedenTime(matchDateTime);
+                
                 const embed = createEmbed('Match Scheduled', 
                     `🗓️ **${team1} vs ${team2}**\n\n` +
-                    `📅 **Date**: ${matchDateTime.toLocaleDateString()}\n` +
-                    `⏰ **Time**: ${matchDateTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}\n` +
+                    `📅 **Date**: ${swedenTime.date}\n` +
+                    `⏰ **Time**: ${swedenTime.time} ${swedenTime.timezone}\n` +
                     (description ? `📝 **Description**: ${description}\n` : '') +
                     `\n✅ Match has been scheduled successfully!\n\n` +
-                    `💡 **Note**: You can schedule matches against any team (A-Team, B-Team, or external teams like ATG, etc.)`, 
+                    `💡 **Note**: You can schedule matches against any team (A-Team, B-Team, or external teams like ATG, etc.)\n` +
+                    `🇸🇪 **Timezone**: All times shown in Sweden timezone`, 
                     config.colors.success);
                 
                 await interaction.reply({ embeds: [embed] });
